@@ -9,7 +9,30 @@ Recommended Neon project names:
 
 ## GitHub Secrets
 
-Add these repository secrets in GitHub:
+For a master database plus tenant databases, add this repository secret:
+
+- `NEON_DATABASE_PAIRS_JSON`
+
+Example value:
+
+```json
+[
+  {
+    "label": "masterdb",
+    "source": "postgresql://SOURCE_MASTER_USER:SOURCE_MASTER_PASSWORD@SOURCE_MASTER_HOST/masterdb?sslmode=require&channel_binding=require",
+    "destination": "postgresql://DEST_MASTER_USER:DEST_MASTER_PASSWORD@DEST_MASTER_HOST/masterdb?sslmode=require&channel_binding=require"
+  },
+  {
+    "label": "tenant_acme",
+    "source": "postgresql://SOURCE_TENANT_USER:SOURCE_TENANT_PASSWORD@SOURCE_TENANT_HOST/tenant_acme?sslmode=require&channel_binding=require",
+    "destination": "postgresql://DEST_TENANT_USER:DEST_TENANT_PASSWORD@DEST_TENANT_HOST/tenant_acme?sslmode=require&channel_binding=require"
+  }
+]
+```
+
+Each source tenant database needs its own matching destination tenant database.
+
+The older single-database mode is still supported with these secrets:
 
 - `NEON_SOURCE_DATABASE_URL`: connection string for `shaj-retail-primary`
 - `NEON_DESTINATION_DATABASE_URL`: connection string for `shaj-retail-fortnightly-mirror`
@@ -32,6 +55,7 @@ You can also run it manually from GitHub:
 
 ## Behavior
 
+- Runs each configured database pair separately.
 - Creates any missing schema objects from the source schema where possible.
 - Adds missing destination columns before importing data.
 - Appends source rows into the destination.

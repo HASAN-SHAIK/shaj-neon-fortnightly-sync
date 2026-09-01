@@ -48,6 +48,7 @@ jobs:
       - name: Run append sync
         if: github.event_name == 'workflow_dispatch' || steps.sync-day.outputs.should_sync == 'true'
         env:
+          NEON_DATABASE_PAIRS_JSON: ${{ secrets.NEON_DATABASE_PAIRS_JSON }}
           SOURCE_DATABASE_URL: ${{ secrets.NEON_SOURCE_DATABASE_URL }}
           DESTINATION_DATABASE_URL: ${{ secrets.NEON_DESTINATION_DATABASE_URL }}
           EXCLUDED_TABLES: ${{ vars.NEON_SYNC_EXCLUDED_TABLES }}
