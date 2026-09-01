@@ -11,6 +11,29 @@ if [[ -z "${DESTINATION_DATABASE_URL:-}" ]]; then
   exit 1
 fi
 
+validate_database_url() {
+  local name="$1"
+  local value="$2"
+
+  if [[ "$value" == psql* ]]; then
+    echo "$name must be only the postgresql:// connection URL, not a full psql command." >&2
+    exit 2
+  fi
+
+  if [[ "$value" == *\\_* ]] || [[ "$value" == *\\@* ]]; then
+    echo "$name contains backslash escapes. Paste the raw Neon URL without Markdown escaping." >&2
+    exit 2
+  fi
+
+  if [[ "$value" != postgresql://* && "$value" != postgres://* ]]; then
+    echo "$name must start with postgresql:// or postgres://." >&2
+    exit 2
+  fi
+}
+
+validate_database_url "SOURCE_DATABASE_URL" "$SOURCE_DATABASE_URL"
+validate_database_url "DESTINATION_DATABASE_URL" "$DESTINATION_DATABASE_URL"
+
 workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 
