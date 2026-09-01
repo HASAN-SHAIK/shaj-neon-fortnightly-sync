@@ -34,6 +34,10 @@ validate_database_url() {
 validate_database_url "SOURCE_DATABASE_URL" "$SOURCE_DATABASE_URL"
 validate_database_url "DESTINATION_DATABASE_URL" "$DESTINATION_DATABASE_URL"
 
+if [[ -d "/usr/lib/postgresql/17/bin" ]]; then
+  export PATH="/usr/lib/postgresql/17/bin:$PATH"
+fi
+
 workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 
