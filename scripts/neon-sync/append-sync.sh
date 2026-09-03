@@ -7,6 +7,83 @@ elif [[ -d "/usr/lib/postgresql/17/bin" ]]; then
   export PATH="/usr/lib/postgresql/17/bin:$PATH"
 fi
 
+RUN_FAILED=0
+FAILURE_REASON=""
+ROLLBACK_ATTEMPTED=0
+ROLLBACK_SUCCEEDED=0
+STATUS_FILE="$(mktemp)"
+
+send_failure_email() {
+  local subject="$1"
+  local body="$2"
+
+  if [[ -z "${NOTIFY_EMAIL_TO:-}" || -z "${SMTP_HOST:-}" || -z "${SMTP_USERNAME:-}" || -z "${SMTP_PASSWORD:-}" ]]; then
+    echo "Failure email skipped: configure NOTIFY_EMAIL_TO, SMTP_HOST, SMTP_USERNAME, and SMTP_PASSWORD."
+    return
+  fi
+
+  local smtp_port="${SMTP_PORT:-587}"
+  local from="${NOTIFY_EMAIL_FROM:-$SMTP_USERNAME}"
+  local config_file
+  local message_file
+
+  config_file="$(mktemp)"
+  message_file="$(mktemp)"
+
+  {
+    printf '%s\n' 'defaults'
+    printf '%s\n' 'auth on'
+    printf '%s\n' 'tls on'
+    printf '%s\n' 'tls_trust_file /etc/ssl/certs/ca-certificates.crt'
+    printf 'host %s\n' "$SMTP_HOST"
+    printf 'port %s\n' "$smtp_port"
+    printf 'user %s\n' "$SMTP_USERNAME"
+    printf 'password %s\n' "$SMTP_PASSWORD"
+    printf 'from %s\n' "$from"
+  } > "$config_file"
+  chmod 600 "$config_file"
+
+  {
+    printf 'From: %s\n' "$from"
+    printf 'To: %s\n' "$NOTIFY_EMAIL_TO"
+    printf 'Subject: %s\n' "$subject"
+    printf 'Content-Type: text/plain; charset=UTF-8\n'
+    printf '\n'
+    printf '%s\n' "$body"
+  } > "$message_file"
+
+  msmtp --file="$config_file" --read-envelope-from -- "$NOTIFY_EMAIL_TO" < "$message_file" || true
+  rm -f "$config_file" "$message_file"
+}
+
+handle_failure() {
+  local line="$1"
+  local code="$2"
+
+  RUN_FAILED=1
+  FAILURE_REASON="Workflow failed at line $line with exit code $code."
+  if [[ -f "$STATUS_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$STATUS_FILE" || true
+  fi
+  echo "$FAILURE_REASON" >&2
+
+  send_failure_email \
+    "SHAJ Neon sync failed" \
+    "The SHAJ Neon sync workflow failed.
+
+Reason: $FAILURE_REASON
+Direction: ${SELECTED_SYNC_DIRECTION:-unknown}
+Rollback attempted: $ROLLBACK_ATTEMPTED
+Rollback succeeded: $ROLLBACK_SUCCEEDED
+
+Open the GitHub Actions run for full logs."
+
+  exit "$code"
+}
+
+trap 'handle_failure $LINENO $?' ERR
+
 validate_database_url() {
   local name="$1"
   local value="$2"
@@ -62,11 +139,13 @@ configure_alternating_master_urls() {
     primary-to-mirror)
       export SOURCE_MASTER_DATABASE_URL="$PRIMARY_MASTER_DATABASE_URL"
       export DESTINATION_MASTER_DATABASE_URL="$MIRROR_MASTER_DATABASE_URL"
+      export SELECTED_SYNC_DIRECTION="$direction"
       echo "Sync direction: primary to mirror."
       ;;
     mirror-to-primary)
       export SOURCE_MASTER_DATABASE_URL="$MIRROR_MASTER_DATABASE_URL"
       export DESTINATION_MASTER_DATABASE_URL="$PRIMARY_MASTER_DATABASE_URL"
+      export SELECTED_SYNC_DIRECTION="$direction"
       echo "Sync direction: mirror to primary."
       ;;
     *)
@@ -567,37 +646,39 @@ update_render_services() {
     exit 1
   fi
 
-  local legacy_env_key="${RENDER_DATABASE_ENV_KEY:-}"
-  local master_env_key="${RENDER_MASTER_DATABASE_ENV_KEY:-MASTER_DATABASE_URL}"
-  local tenant_template_env_key="${RENDER_TENANT_TEMPLATE_ENV_KEY:-TENANT_DATABASE_URL_TEMPLATE}"
-  local deploy_mode="${RENDER_DEPLOY_MODE:-build_and_deploy}"
+  echo "::group::Promote Render to active database"
 
-  if [[ "$deploy_mode" != "build_and_deploy" && "$deploy_mode" != "deploy_only" ]]; then
-    echo "RENDER_DEPLOY_MODE must be build_and_deploy or deploy_only." >&2
-    exit 2
-  fi
+  node - "${RENDER_SERVICE_IDS:-}" "${RENDER_ENV_GROUP_ID:-}" "${RENDER_DATABASE_ENV_KEY:-}" "${RENDER_MASTER_DATABASE_ENV_KEY:-MASTER_DATABASE_URL}" "${RENDER_TENANT_TEMPLATE_ENV_KEY:-TENANT_DATABASE_URL_TEMPLATE}" "$SOURCE_MASTER_DATABASE_URL" "${RENDER_DEPLOY_MODE:-deploy_only}" "${RENDER_HEALTH_URLS:-}" "${RENDER_DEPLOY_TIMEOUT_SECONDS:-900}" "${RENDER_HEALTH_TIMEOUT_SECONDS:-180}" "$STATUS_FILE" <<'NODE'
+const [
+  serviceIdsCsv,
+  envGroupId,
+  legacyEnvKey,
+  masterEnvKey,
+  tenantTemplateEnvKey,
+  masterDatabaseUrl,
+  deployMode,
+  healthUrlsCsv,
+  deployTimeoutSecondsRaw,
+  healthTimeoutSecondsRaw,
+  statusFile,
+] = process.argv.slice(2);
 
-  echo "::group::Update Render services"
-  echo "Updating Render env keys $master_env_key and $tenant_template_env_key to the active database side."
-
-  node - "${RENDER_SERVICE_IDS:-}" "${RENDER_ENV_GROUP_ID:-}" "$legacy_env_key" "$master_env_key" "$tenant_template_env_key" "$SOURCE_MASTER_DATABASE_URL" "$deploy_mode" <<'NODE'
-const serviceIds = process.argv[2]
-  .split(',')
-  .map((value) => value.trim())
-  .filter(Boolean);
-const envGroupId = process.argv[3];
-const legacyEnvKey = process.argv[4];
-const masterEnvKey = process.argv[5];
-const tenantTemplateEnvKey = process.argv[6];
-const masterDatabaseUrl = process.argv[7];
-const deployMode = process.argv[8];
 const apiKey = process.env.RENDER_API_KEY;
+const serviceIds = serviceIdsCsv.split(',').map((value) => value.trim()).filter(Boolean);
+const healthUrls = healthUrlsCsv.split(',').map((value) => value.trim()).filter(Boolean);
+const deployTimeoutMs = Number(deployTimeoutSecondsRaw || 900) * 1000;
+const healthTimeoutMs = Number(healthTimeoutSecondsRaw || 180) * 1000;
+const pollIntervalMs = 10000;
 
 function encodePath(value) {
   return encodeURIComponent(value);
 }
 
-async function renderRequest(url, options) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function renderRequest(url, options = {}) {
   const response = await fetch(url, {
     ...options,
     headers: {
@@ -620,6 +701,125 @@ function tenantTemplateFromMasterUrl(value) {
   return value.replace(/(postgres(?:ql)?:\/\/[^/?#]+)\/[^?#]*/, '$1/{db}');
 }
 
+function envVarValue(payload) {
+  if (payload?.envVar?.value !== undefined) return payload.envVar.value;
+  if (payload?.value !== undefined) return payload.value;
+  return '';
+}
+
+function deployId(payload) {
+  return payload?.deploy?.id || payload?.id;
+}
+
+function deployStatus(payload) {
+  return payload?.deploy?.status || payload?.status || '';
+}
+
+function deployBody() {
+  return JSON.stringify({
+    clearCache: deployMode === 'build_and_deploy' ? 'clear' : 'do_not_clear',
+  });
+}
+
+function writeStatus(key, value) {
+  const fs = require('fs');
+  fs.appendFileSync(statusFile, `${key}=${value ? 1 : 0}\n`);
+}
+
+async function getEnvValue(scope, id, key) {
+  const prefix = scope === 'group'
+    ? `https://api.render.com/v1/env-groups/${encodePath(id)}`
+    : `https://api.render.com/v1/services/${encodePath(id)}`;
+  const payload = await renderRequest(`${prefix}/env-vars/${encodePath(key)}`, { method: 'GET' });
+  return envVarValue(payload);
+}
+
+async function putEnvValue(scope, id, key, value) {
+  const prefix = scope === 'group'
+    ? `https://api.render.com/v1/env-groups/${encodePath(id)}`
+    : `https://api.render.com/v1/services/${encodePath(id)}`;
+  await renderRequest(`${prefix}/env-vars/${encodePath(key)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ value }),
+  });
+}
+
+async function triggerDeploy(serviceId) {
+  const payload = await renderRequest(`https://api.render.com/v1/services/${encodePath(serviceId)}/deploys`, {
+    method: 'POST',
+    body: deployBody(),
+  });
+  const id = deployId(payload);
+  if (!id) throw new Error(`Render did not return a deploy id for ${serviceId}.`);
+  console.log(`Render deploy ${id} triggered for ${serviceId}.`);
+  return id;
+}
+
+async function waitForDeploy(serviceId, id, label) {
+  const deadline = Date.now() + deployTimeoutMs;
+  const success = new Set(['live', 'succeeded', 'success']);
+  const failed = new Set(['build_failed', 'update_failed', 'pre_deploy_failed', 'failed', 'canceled', 'cancelled']);
+
+  while (Date.now() < deadline) {
+    const payload = await renderRequest(`https://api.render.com/v1/services/${encodePath(serviceId)}/deploys/${encodePath(id)}`, {
+      method: 'GET',
+    });
+    const status = deployStatus(payload);
+    console.log(`${label} deploy ${id} for ${serviceId}: ${status}`);
+
+    if (success.has(status)) return;
+    if (failed.has(status)) throw new Error(`${label} deploy ${id} for ${serviceId} ended with ${status}.`);
+
+    await sleep(pollIntervalMs);
+  }
+
+  throw new Error(`${label} deploy ${id} for ${serviceId} did not finish within ${deployTimeoutMs / 1000}s.`);
+}
+
+async function checkHealth() {
+  if (!healthUrls.length) {
+    console.log('Health checks skipped: RENDER_HEALTH_URLS is not configured.');
+    return;
+  }
+
+  const deadline = Date.now() + healthTimeoutMs;
+  const pending = new Set(healthUrls);
+
+  while (Date.now() < deadline && pending.size) {
+    for (const url of [...pending]) {
+      try {
+        const response = await fetch(url, { method: 'GET' });
+        console.log(`Health ${url}: ${response.status}`);
+        if (response.ok) pending.delete(url);
+      } catch (error) {
+        console.log(`Health ${url}: ${error.message}`);
+      }
+    }
+
+    if (pending.size) await sleep(10000);
+  }
+
+  if (pending.size) {
+    throw new Error(`Health checks failed for: ${[...pending].join(', ')}`);
+  }
+}
+
+async function triggerAndWait(label) {
+  if (!serviceIds.length) {
+    console.log(`${label} deploy skipped: RENDER_SERVICE_IDS is empty.`);
+    return;
+  }
+
+  const deploys = [];
+  for (const serviceId of serviceIds) {
+    deploys.push({ serviceId, id: await triggerDeploy(serviceId) });
+  }
+
+  for (const deploy of deploys) {
+    await waitForDeploy(deploy.serviceId, deploy.id, label);
+  }
+}
+
 const updates = [
   { key: masterEnvKey, value: masterDatabaseUrl },
   { key: tenantTemplateEnvKey, value: tenantTemplateFromMasterUrl(masterDatabaseUrl) },
@@ -629,59 +829,67 @@ if (legacyEnvKey) {
   updates.push({ key: legacyEnvKey, value: masterDatabaseUrl });
 }
 
-if (envGroupId) {
-  console.log(`Updating Render env group ${envGroupId}...`);
-  for (const update of updates) {
-    await renderRequest(
-      `https://api.render.com/v1/env-groups/${encodePath(envGroupId)}/env-vars/${encodePath(update.key)}`,
-      {
-        method: 'PUT',
-        body: JSON.stringify({ value: update.value }),
-      },
-    );
-    console.log(`Updated env group key ${update.key}.`);
-  }
-  console.log(`Render env group ${envGroupId} updated.`);
-} else {
-  if (!serviceIds.length) {
-    console.error('RENDER_SERVICE_IDS must contain at least one Render service ID when RENDER_ENV_GROUP_ID is not set.');
-    process.exit(1);
-  }
+async function main() {
+  const scope = envGroupId ? 'group' : 'service';
+  const targetIds = envGroupId ? [envGroupId] : serviceIds;
+  if (!targetIds.length) throw new Error('Configure RENDER_ENV_GROUP_ID or RENDER_SERVICE_IDS.');
 
-  for (const serviceId of serviceIds) {
-    console.log(`Updating Render service ${serviceId}...`);
+  const previous = [];
+  for (const targetId of targetIds) {
     for (const update of updates) {
-      await renderRequest(
-        `https://api.render.com/v1/services/${encodePath(serviceId)}/env-vars/${encodePath(update.key)}`,
-        {
-          method: 'PUT',
-          body: JSON.stringify({ value: update.value }),
-        },
-      );
-      console.log(`Updated service key ${update.key} on ${serviceId}.`);
+      previous.push({
+        scope,
+        targetId,
+        key: update.key,
+        value: await getEnvValue(scope, targetId, update.key),
+      });
     }
   }
+
+  let promoted = false;
+  try {
+    console.log('Updating Render environment values to active database.');
+    for (const targetId of targetIds) {
+      for (const update of updates) {
+        await putEnvValue(scope, targetId, update.key, update.value);
+        console.log(`Updated ${scope} ${targetId} key ${update.key}.`);
+      }
+    }
+
+    await triggerAndWait('promotion');
+    await checkHealth();
+    promoted = true;
+    console.log('Render promotion and health checks completed successfully.');
+  } catch (error) {
+    console.error(`Render promotion failed: ${error.message}`);
+    console.error('Restoring previous Render environment values.');
+    writeStatus('ROLLBACK_ATTEMPTED', true);
+
+    for (const item of previous) {
+      await putEnvValue(item.scope, item.targetId, item.key, item.value);
+      console.log(`Restored ${item.scope} ${item.targetId} key ${item.key}.`);
+    }
+
+    await triggerAndWait('rollback');
+    await checkHealth();
+    writeStatus('ROLLBACK_SUCCEEDED', true);
+    throw error;
+  }
+
+  if (!promoted) throw new Error('Render promotion did not complete.');
 }
 
-for (const serviceId of serviceIds) {
-  console.log(`Triggering Render deploy for ${serviceId}...`);
-  await renderRequest(
-    `https://api.render.com/v1/services/${encodePath(serviceId)}/deploys`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ deployMode }),
-    },
-  );
-
-  console.log(`Render deploy triggered for ${serviceId}.`);
-}
+main().catch((error) => {
+  console.error(error.message);
+  process.exit(1);
+});
 NODE
 
   echo "::endgroup::"
 }
 
 pair_file="$(mktemp)"
-trap 'rm -f "$pair_file"' EXIT
+trap 'rm -f "$pair_file" "$STATUS_FILE"' EXIT
 configure_alternating_master_urls
 build_pair_file "$pair_file"
 

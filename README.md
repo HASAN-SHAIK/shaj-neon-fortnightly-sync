@@ -101,6 +101,10 @@ The workflow can update Render after a successful sync so your app points to the
 Add this repository secret:
 
 - `RENDER_API_KEY`
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_USERNAME`
+- `SMTP_PASSWORD`
 
 Add these repository variables:
 
@@ -109,9 +113,16 @@ Add these repository variables:
 - `RENDER_MASTER_DATABASE_ENV_KEY`: optional, defaults to `MASTER_DATABASE_URL`
 - `RENDER_TENANT_TEMPLATE_ENV_KEY`: optional, defaults to `TENANT_DATABASE_URL_TEMPLATE`
 - `RENDER_DATABASE_ENV_KEY`: optional legacy key to also update, for example `DATABASE_URL`
-- `RENDER_DEPLOY_MODE`: optional, defaults to `build_and_deploy`; use `deploy_only` if your app only needs a runtime redeploy
+- `RENDER_DEPLOY_MODE`: optional, defaults to `deploy_only`; use `build_and_deploy` to clear the build cache
+- `RENDER_HEALTH_URLS`: comma-separated URLs to check after Render deploy, for example `https://api-shajtech.onrender.com/health`
+- `RENDER_DEPLOY_TIMEOUT_SECONDS`: optional, defaults to `900`
+- `RENDER_HEALTH_TIMEOUT_SECONDS`: optional, defaults to `180`
+- `NOTIFY_EMAIL_TO`: email address that receives failure notices
+- `NOTIFY_EMAIL_FROM`: optional sender address, defaults to `SMTP_USERNAME`
 
-After verification passes, the workflow updates the configured Render env group variables to the active side and triggers a Render deploy for each service. If `RENDER_ENV_GROUP_ID` is not set, it updates service-level env vars instead.
+After verification passes, the workflow updates the configured Render env group variables to the active side, triggers a Render deploy for each service, waits for the deploys to succeed, and then checks the configured health URLs.
+
+If Render update, deploy polling, or health checks fail, the workflow restores the previous Render env values and triggers a rollback deploy. A failure email is sent if SMTP is configured.
 
 ## Schedule
 
@@ -133,6 +144,6 @@ You can also run it manually from GitHub:
 - Uses `ON CONFLICT DO NOTHING`, so rows that already exist by primary key or unique constraint are skipped.
 - Does not delete destination data.
 - Verifies after each database sync that destination has every source table, every source column with the same type, and at least the source row count for each non-excluded table.
-- Optionally updates Render service env vars and triggers deploys after verification.
+- Optionally updates Render env vars, waits for Render deploys, checks app health, and rolls back to the previous DB env values if Render promotion fails.
 
 If a table has no primary key or unique constraint, repeated runs can duplicate its rows. Add a unique key to those tables if they must remain deduplicated.

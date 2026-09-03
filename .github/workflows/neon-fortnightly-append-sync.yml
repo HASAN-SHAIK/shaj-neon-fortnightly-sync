@@ -7,6 +7,10 @@ on:
     # 1st and 16th because GitHub Actions cron only supports UTC.
     - cron: "30 20 * * *"
 
+concurrency:
+  group: neon-fortnightly-sync
+  cancel-in-progress: false
+
 jobs:
   append-sync:
     name: Append source data into mirror
@@ -33,7 +37,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || steps.sync-day.outputs.should_sync == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ca-certificates curl
+          sudo apt-get install -y ca-certificates curl msmtp
           sudo install -d /usr/share/postgresql-common/pgdg
           sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
           . /etc/os-release
@@ -65,4 +69,13 @@ jobs:
           RENDER_MASTER_DATABASE_ENV_KEY: ${{ vars.RENDER_MASTER_DATABASE_ENV_KEY }}
           RENDER_TENANT_TEMPLATE_ENV_KEY: ${{ vars.RENDER_TENANT_TEMPLATE_ENV_KEY }}
           RENDER_DEPLOY_MODE: ${{ vars.RENDER_DEPLOY_MODE }}
+          RENDER_HEALTH_URLS: ${{ vars.RENDER_HEALTH_URLS }}
+          RENDER_DEPLOY_TIMEOUT_SECONDS: ${{ vars.RENDER_DEPLOY_TIMEOUT_SECONDS }}
+          RENDER_HEALTH_TIMEOUT_SECONDS: ${{ vars.RENDER_HEALTH_TIMEOUT_SECONDS }}
+          NOTIFY_EMAIL_TO: ${{ vars.NOTIFY_EMAIL_TO }}
+          NOTIFY_EMAIL_FROM: ${{ vars.NOTIFY_EMAIL_FROM }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
         run: bash scripts/neon-sync/append-sync.sh
