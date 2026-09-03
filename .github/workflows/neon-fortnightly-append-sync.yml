@@ -62,5 +62,7 @@ jobs:
           RENDER_ENV_GROUP_ID: ${{ vars.RENDER_ENV_GROUP_ID }}
           RENDER_SERVICE_IDS: ${{ vars.RENDER_SERVICE_IDS }}
           RENDER_DATABASE_ENV_KEY: ${{ vars.RENDER_DATABASE_ENV_KEY }}
+          RENDER_MASTER_DATABASE_ENV_KEY: ${{ vars.RENDER_MASTER_DATABASE_ENV_KEY }}
+          RENDER_TENANT_TEMPLATE_ENV_KEY: ${{ vars.RENDER_TENANT_TEMPLATE_ENV_KEY }}
           RENDER_DEPLOY_MODE: ${{ vars.RENDER_DEPLOY_MODE }}
         run: bash scripts/neon-sync/append-sync.sh

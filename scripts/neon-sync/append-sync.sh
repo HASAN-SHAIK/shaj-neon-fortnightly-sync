@@ -567,7 +567,9 @@ update_render_services() {
     exit 1
   fi
 
-  local env_key="${RENDER_DATABASE_ENV_KEY:-DATABASE_URL}"
+  local legacy_env_key="${RENDER_DATABASE_ENV_KEY:-}"
+  local master_env_key="${RENDER_MASTER_DATABASE_ENV_KEY:-MASTER_DATABASE_URL}"
+  local tenant_template_env_key="${RENDER_TENANT_TEMPLATE_ENV_KEY:-TENANT_DATABASE_URL_TEMPLATE}"
   local deploy_mode="${RENDER_DEPLOY_MODE:-build_and_deploy}"
 
   if [[ "$deploy_mode" != "build_and_deploy" && "$deploy_mode" != "deploy_only" ]]; then
@@ -576,17 +578,19 @@ update_render_services() {
   fi
 
   echo "::group::Update Render services"
-  echo "Updating Render env key $env_key to the active master database URL."
+  echo "Updating Render env keys $master_env_key and $tenant_template_env_key to the active database side."
 
-  node - "${RENDER_SERVICE_IDS:-}" "${RENDER_ENV_GROUP_ID:-}" "$env_key" "$SOURCE_MASTER_DATABASE_URL" "$deploy_mode" <<'NODE'
+  node - "${RENDER_SERVICE_IDS:-}" "${RENDER_ENV_GROUP_ID:-}" "$legacy_env_key" "$master_env_key" "$tenant_template_env_key" "$SOURCE_MASTER_DATABASE_URL" "$deploy_mode" <<'NODE'
 const serviceIds = process.argv[2]
   .split(',')
   .map((value) => value.trim())
   .filter(Boolean);
 const envGroupId = process.argv[3];
-const envKey = process.argv[4];
-const databaseUrl = process.argv[5];
-const deployMode = process.argv[6];
+const legacyEnvKey = process.argv[4];
+const masterEnvKey = process.argv[5];
+const tenantTemplateEnvKey = process.argv[6];
+const masterDatabaseUrl = process.argv[7];
+const deployMode = process.argv[8];
 const apiKey = process.env.RENDER_API_KEY;
 
 function encodePath(value) {
@@ -612,15 +616,31 @@ async function renderRequest(url, options) {
   return text ? JSON.parse(text) : null;
 }
 
+function tenantTemplateFromMasterUrl(value) {
+  return value.replace(/(postgres(?:ql)?:\/\/[^/?#]+)\/[^?#]*/, '$1/{db}');
+}
+
+const updates = [
+  { key: masterEnvKey, value: masterDatabaseUrl },
+  { key: tenantTemplateEnvKey, value: tenantTemplateFromMasterUrl(masterDatabaseUrl) },
+];
+
+if (legacyEnvKey) {
+  updates.push({ key: legacyEnvKey, value: masterDatabaseUrl });
+}
+
 if (envGroupId) {
   console.log(`Updating Render env group ${envGroupId}...`);
-  await renderRequest(
-    `https://api.render.com/v1/env-groups/${encodePath(envGroupId)}/env-vars/${encodePath(envKey)}`,
-    {
-      method: 'PUT',
-      body: JSON.stringify({ value: databaseUrl }),
-    },
-  );
+  for (const update of updates) {
+    await renderRequest(
+      `https://api.render.com/v1/env-groups/${encodePath(envGroupId)}/env-vars/${encodePath(update.key)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ value: update.value }),
+      },
+    );
+    console.log(`Updated env group key ${update.key}.`);
+  }
   console.log(`Render env group ${envGroupId} updated.`);
 } else {
   if (!serviceIds.length) {
@@ -630,13 +650,16 @@ if (envGroupId) {
 
   for (const serviceId of serviceIds) {
     console.log(`Updating Render service ${serviceId}...`);
-    await renderRequest(
-      `https://api.render.com/v1/services/${encodePath(serviceId)}/env-vars/${encodePath(envKey)}`,
-      {
-        method: 'PUT',
-        body: JSON.stringify({ value: databaseUrl }),
-      },
-    );
+    for (const update of updates) {
+      await renderRequest(
+        `https://api.render.com/v1/services/${encodePath(serviceId)}/env-vars/${encodePath(update.key)}`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ value: update.value }),
+        },
+      );
+      console.log(`Updated service key ${update.key} on ${serviceId}.`);
+    }
   }
 }
 
