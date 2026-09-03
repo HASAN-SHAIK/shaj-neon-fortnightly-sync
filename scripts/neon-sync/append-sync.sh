@@ -16,14 +16,16 @@ STATUS_FILE="$(mktemp)"
 send_failure_email() {
   local subject="$1"
   local body="$2"
+  local smtp_user="${SMTP_USERNAME:-${SMTP_USER:-}}"
+  local smtp_pass="${SMTP_PASSWORD:-${SMTP_PASS:-}}"
 
-  if [[ -z "${NOTIFY_EMAIL_TO:-}" || -z "${SMTP_HOST:-}" || -z "${SMTP_USERNAME:-}" || -z "${SMTP_PASSWORD:-}" ]]; then
-    echo "Failure email skipped: configure NOTIFY_EMAIL_TO, SMTP_HOST, SMTP_USERNAME, and SMTP_PASSWORD."
+  if [[ -z "${NOTIFY_EMAIL_TO:-}" || -z "${SMTP_HOST:-}" || -z "$smtp_user" || -z "$smtp_pass" ]]; then
+    echo "Failure email skipped: configure NOTIFY_EMAIL_TO, SMTP_HOST, and SMTP_USERNAME/SMTP_PASSWORD or SMTP_USER/SMTP_PASS."
     return
   fi
 
   local smtp_port="${SMTP_PORT:-587}"
-  local from="${NOTIFY_EMAIL_FROM:-$SMTP_USERNAME}"
+  local from="${NOTIFY_EMAIL_FROM:-$smtp_user}"
   local config_file
   local message_file
 
@@ -37,8 +39,8 @@ send_failure_email() {
     printf '%s\n' 'tls_trust_file /etc/ssl/certs/ca-certificates.crt'
     printf 'host %s\n' "$SMTP_HOST"
     printf 'port %s\n' "$smtp_port"
-    printf 'user %s\n' "$SMTP_USERNAME"
-    printf 'password %s\n' "$SMTP_PASSWORD"
+    printf 'user %s\n' "$smtp_user"
+    printf 'password %s\n' "$smtp_pass"
     printf 'from %s\n' "$from"
   } > "$config_file"
   chmod 600 "$config_file"

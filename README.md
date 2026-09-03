@@ -103,8 +103,7 @@ Add this repository secret:
 - `RENDER_API_KEY`
 - `SMTP_HOST`
 - `SMTP_PORT`
-- `SMTP_USERNAME`
-- `SMTP_PASSWORD`
+- `SMTP_USERNAME` and `SMTP_PASSWORD`, or the app's existing names `SMTP_USER` and `SMTP_PASS`
 
 Add these repository variables:
 
