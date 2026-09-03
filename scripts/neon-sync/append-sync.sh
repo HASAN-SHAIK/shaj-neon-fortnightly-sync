@@ -162,9 +162,12 @@ sync_pair() {
 
   local schema_file="$workdir/source-schema.sql"
   local copy_file="$workdir/source-data.sql"
+  local wrapped_copy_file="$workdir/wrapped-source-data.sql"
   local source_columns="$workdir/source-columns.tsv"
   local destination_columns="$workdir/destination-columns.tsv"
   local missing_columns_sql="$workdir/add-missing-columns.sql"
+  local disable_triggers_sql="$workdir/disable-user-triggers.sql"
+  local enable_triggers_sql="$workdir/enable-user-triggers.sql"
 
   echo "Checking source connection for $label..."
   psql "$source_url" -v ON_ERROR_STOP=1 -Atc "select current_database();"
@@ -303,7 +306,29 @@ NODE
     > "$copy_file"
 
   echo "Appending data into destination for $label..."
-  psql "$destination_url" -v ON_ERROR_STOP=1 -f "$copy_file"
+  psql "$destination_url" -v ON_ERROR_STOP=1 -Atc "
+select format('alter table %I.%I disable trigger user;', schemaname, tablename)
+from pg_catalog.pg_tables
+where schemaname not in ('pg_catalog', 'information_schema')
+order by schemaname, tablename;
+" > "$disable_triggers_sql"
+
+  psql "$destination_url" -v ON_ERROR_STOP=1 -Atc "
+select format('alter table %I.%I enable trigger user;', schemaname, tablename)
+from pg_catalog.pg_tables
+where schemaname not in ('pg_catalog', 'information_schema')
+order by schemaname, tablename;
+" > "$enable_triggers_sql"
+
+  {
+    printf '%s\n' 'begin;'
+    cat "$disable_triggers_sql"
+    cat "$copy_file"
+    cat "$enable_triggers_sql"
+    printf '%s\n' 'commit;'
+  } > "$wrapped_copy_file"
+
+  psql "$destination_url" -v ON_ERROR_STOP=1 -f "$wrapped_copy_file"
 
   rm -rf "$workdir"
   echo "Append sync completed successfully for $label."
