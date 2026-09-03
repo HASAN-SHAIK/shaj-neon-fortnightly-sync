@@ -314,15 +314,17 @@ ensure_destination_database() {
   local admin_url="$1"
   local database_name="$2"
 
-  local create_database_sql="
-select format('create database %I', :'database_name')
-where not exists (
-  select 1 from pg_database where datname = :'database_name'
-);
-"
-
   echo "Ensuring destination database exists for $database_name..."
-  psql "$admin_url" -v ON_ERROR_STOP=1 -v database_name="$database_name" -Atc "$create_database_sql" | psql "$admin_url" -v ON_ERROR_STOP=1
+
+  if psql "$admin_url" -v ON_ERROR_STOP=1 -Atc "select datname from pg_database;" | grep -Fxq "$database_name"; then
+    return
+  fi
+
+  node - "$database_name" <<'NODE' | psql "$admin_url" -v ON_ERROR_STOP=1
+const databaseName = process.argv[2];
+const identifier = `"${databaseName.replace(/"/g, '""')}"`;
+console.log(`create database ${identifier};`);
+NODE
 }
 
 pair_file="$(mktemp)"
