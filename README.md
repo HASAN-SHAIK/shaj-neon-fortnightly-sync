@@ -92,5 +92,6 @@ You can also run it manually from GitHub:
 - Appends source rows into the destination.
 - Uses `ON CONFLICT DO NOTHING`, so rows that already exist by primary key or unique constraint are skipped.
 - Does not delete destination data.
+- Verifies after each database sync that destination has every source table, every source column with the same type, and at least the source row count for each non-excluded table.
 
 If a table has no primary key or unique constraint, repeated runs can duplicate its rows. Add a unique key to those tables if they must remain deduplicated.

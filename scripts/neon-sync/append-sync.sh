@@ -168,6 +168,13 @@ sync_pair() {
   local missing_columns_sql="$workdir/add-missing-columns.sql"
   local disable_triggers_sql="$workdir/disable-user-triggers.sql"
   local enable_triggers_sql="$workdir/enable-user-triggers.sql"
+  local verify_source_columns="$workdir/verify-source-columns.tsv"
+  local verify_destination_columns="$workdir/verify-destination-columns.tsv"
+  local verify_source_tables="$workdir/verify-source-tables.tsv"
+  local verify_destination_tables="$workdir/verify-destination-tables.tsv"
+  local row_count_sql="$workdir/row-counts.sql"
+  local source_row_counts="$workdir/source-row-counts.tsv"
+  local destination_row_counts="$workdir/destination-row-counts.tsv"
 
   echo "Checking source connection for $label..."
   psql "$source_url" -v ON_ERROR_STOP=1 -Atc "select current_database();"
@@ -330,8 +337,149 @@ order by schemaname, tablename;
 
   psql "$destination_url" -v ON_ERROR_STOP=1 -f "$wrapped_copy_file"
 
+  echo "Verifying schema and row counts for $label..."
+
+  local table_query="
+select n.nspname, c.relname
+from pg_catalog.pg_class c
+join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+where c.relkind in ('r', 'p')
+  and n.nspname not in ('pg_catalog', 'information_schema')
+order by n.nspname, c.relname;
+"
+
+  psql "$source_url" -v ON_ERROR_STOP=1 -At -F $'\t' -c "$column_query" > "$verify_source_columns"
+  psql "$destination_url" -v ON_ERROR_STOP=1 -At -F $'\t' -c "$column_query" > "$verify_destination_columns"
+  psql "$source_url" -v ON_ERROR_STOP=1 -At -F $'\t' -c "$table_query" > "$verify_source_tables"
+  psql "$destination_url" -v ON_ERROR_STOP=1 -At -F $'\t' -c "$table_query" > "$verify_destination_tables"
+
+  node - "$verify_source_columns" "$verify_destination_columns" "$verify_source_tables" "$verify_destination_tables" "$row_count_sql" "$excluded_tables" <<'NODE'
+const fs = require('fs');
+
+const [
+  sourceColumnsPath,
+  destinationColumnsPath,
+  sourceTablesPath,
+  destinationTablesPath,
+  rowCountSqlPath,
+  excludedTablesCsv = '',
+] = process.argv.slice(2);
+
+function readLines(path) {
+  const text = fs.readFileSync(path, 'utf8').trim();
+  return text ? text.split(/\r?\n/) : [];
+}
+
+function ident(value) {
+  return `"${String(value).replace(/"/g, '""')}"`;
+}
+
+const excludedTables = new Set(
+  excludedTablesCsv.split(',').map((value) => value.trim()).filter(Boolean),
+);
+
+const sourceTables = readLines(sourceTablesPath).map((line) => {
+  const [schema, table] = line.split('\t');
+  return { schema, table, key: `${schema}.${table}` };
+});
+const destinationTables = new Set(
+  readLines(destinationTablesPath).map((line) => line.split('\t').slice(0, 2).join('.')),
+);
+
+const schemaErrors = [];
+for (const table of sourceTables) {
+  if (!destinationTables.has(table.key)) {
+    schemaErrors.push(`Missing destination table: ${table.key}`);
+  }
+}
+
+function columnMap(path) {
+  const map = new Map();
+  for (const line of readLines(path)) {
+    const [schema, table, column, , columnType] = line.split('\t');
+    map.set(`${schema}.${table}.${column}`, columnType);
+  }
+  return map;
+}
+
+const sourceColumns = columnMap(sourceColumnsPath);
+const destinationColumns = columnMap(destinationColumnsPath);
+for (const [key, sourceType] of sourceColumns.entries()) {
+  const destinationType = destinationColumns.get(key);
+  if (!destinationType) {
+    schemaErrors.push(`Missing destination column: ${key}`);
+  } else if (destinationType !== sourceType) {
+    schemaErrors.push(`Column type mismatch for ${key}: source=${sourceType}, destination=${destinationType}`);
+  }
+}
+
+if (schemaErrors.length) {
+  console.error('Schema verification failed:');
+  for (const error of schemaErrors) console.error(`- ${error}`);
+  process.exit(1);
+}
+
+const rowCountStatements = sourceTables
+  .filter((table) => !excludedTables.has(table.key))
+  .map((table) => {
+    const label = table.key.replace(/'/g, "''");
+    return `select '${label}' as table_name, count(*)::bigint as row_count from ${ident(table.schema)}.${ident(table.table)}`;
+  });
+
+fs.writeFileSync(rowCountSqlPath, rowCountStatements.join('\nunion all\n') + (rowCountStatements.length ? ';\n' : ''));
+console.log(`Schema verification OK. Tables checked: ${sourceTables.length}. Row-count tables: ${rowCountStatements.length}.`);
+NODE
+
+  if [[ -s "$row_count_sql" ]]; then
+    psql "$source_url" -v ON_ERROR_STOP=1 -At -F $'\t' -f "$row_count_sql" > "$source_row_counts"
+    psql "$destination_url" -v ON_ERROR_STOP=1 -At -F $'\t' -f "$row_count_sql" > "$destination_row_counts"
+  else
+    : > "$source_row_counts"
+    : > "$destination_row_counts"
+  fi
+
+  node - "$source_row_counts" "$destination_row_counts" <<'NODE'
+const fs = require('fs');
+
+const [sourcePath, destinationPath] = process.argv.slice(2);
+
+function readCounts(path) {
+  const text = fs.readFileSync(path, 'utf8').trim();
+  const counts = new Map();
+  if (!text) return counts;
+
+  for (const line of text.split(/\r?\n/)) {
+    const [tableName, rowCount] = line.split('\t');
+    counts.set(tableName, BigInt(rowCount));
+  }
+
+  return counts;
+}
+
+const sourceCounts = readCounts(sourcePath);
+const destinationCounts = readCounts(destinationPath);
+const errors = [];
+
+for (const [tableName, sourceCount] of sourceCounts.entries()) {
+  const destinationCount = destinationCounts.get(tableName);
+  if (destinationCount === undefined) {
+    errors.push(`Missing destination row count for ${tableName}`);
+  } else if (destinationCount < sourceCount) {
+    errors.push(`${tableName}: source=${sourceCount}, destination=${destinationCount}`);
+  }
+}
+
+if (errors.length) {
+  console.error('Row count verification failed. Destination must have at least source row count for append-only sync:');
+  for (const error of errors) console.error(`- ${error}`);
+  process.exit(1);
+}
+
+console.log(`Row count verification OK. Tables checked: ${sourceCounts.size}.`);
+NODE
+
   rm -rf "$workdir"
-  echo "Append sync completed successfully for $label."
+  echo "Append sync and verification completed successfully for $label."
   echo "::endgroup::"
 }
 
