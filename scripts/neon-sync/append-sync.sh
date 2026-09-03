@@ -25,6 +25,55 @@ validate_database_url() {
   fi
 }
 
+configure_alternating_master_urls() {
+  if [[ -z "${PRIMARY_MASTER_DATABASE_URL:-}" && -z "${MIRROR_MASTER_DATABASE_URL:-}" ]]; then
+    return
+  fi
+
+  if [[ -z "${PRIMARY_MASTER_DATABASE_URL:-}" ]]; then
+    echo "PRIMARY_MASTER_DATABASE_URL secret is missing." >&2
+    exit 1
+  fi
+
+  if [[ -z "${MIRROR_MASTER_DATABASE_URL:-}" ]]; then
+    echo "MIRROR_MASTER_DATABASE_URL secret is missing." >&2
+    exit 1
+  fi
+
+  validate_database_url "PRIMARY_MASTER_DATABASE_URL" "$PRIMARY_MASTER_DATABASE_URL"
+  validate_database_url "MIRROR_MASTER_DATABASE_URL" "$MIRROR_MASTER_DATABASE_URL"
+
+  local direction="${SYNC_DIRECTION:-auto}"
+
+  if [[ "$direction" == "auto" ]]; then
+    local ist_day
+    ist_day="$(TZ=Asia/Kolkata date +%-d)"
+
+    if (( ist_day <= 15 )); then
+      direction="primary-to-mirror"
+    else
+      direction="mirror-to-primary"
+    fi
+  fi
+
+  case "$direction" in
+    primary-to-mirror)
+      export SOURCE_MASTER_DATABASE_URL="$PRIMARY_MASTER_DATABASE_URL"
+      export DESTINATION_MASTER_DATABASE_URL="$MIRROR_MASTER_DATABASE_URL"
+      echo "Sync direction: primary to mirror."
+      ;;
+    mirror-to-primary)
+      export SOURCE_MASTER_DATABASE_URL="$MIRROR_MASTER_DATABASE_URL"
+      export DESTINATION_MASTER_DATABASE_URL="$PRIMARY_MASTER_DATABASE_URL"
+      echo "Sync direction: mirror to primary."
+      ;;
+    *)
+      echo "SYNC_DIRECTION must be auto, primary-to-mirror, or mirror-to-primary." >&2
+      exit 2
+      ;;
+  esac
+}
+
 build_pair_file() {
   local pair_file="$1"
 
@@ -502,6 +551,7 @@ NODE
 
 pair_file="$(mktemp)"
 trap 'rm -f "$pair_file"' EXIT
+configure_alternating_master_urls
 build_pair_file "$pair_file"
 
 while IFS=$'\t' read -r label source_url destination_url excluded_tables; do

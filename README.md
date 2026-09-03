@@ -1,6 +1,6 @@
 # Neon Fortnightly Append Sync
 
-This setup copies data from the primary Neon database into a mirror Neon database on a fixed schedule.
+This setup syncs data between a primary Neon project and a mirror Neon project on a fixed schedule. The active source changes automatically every half month.
 
 Recommended Neon project names:
 
@@ -11,17 +11,30 @@ Recommended Neon project names:
 
 For your master database plus tenant database architecture, add these repository secrets:
 
-- `SOURCE_MASTER_DATABASE_URL`
-- `DESTINATION_MASTER_DATABASE_URL`
+- `PRIMARY_MASTER_DATABASE_URL`
+- `MIRROR_MASTER_DATABASE_URL`
 
-Use raw Neon PostgreSQL URLs for the `masterdb` database. The sync job reads tenant database names from `public.tenants.database_name` in `masterdb`, then syncs each matching tenant database separately.
+Use raw Neon PostgreSQL URLs for the `masterdb` database. These names stay fixed: primary is always the primary project URL, mirror is always the mirror project URL. The workflow decides which one is source and which one is destination based on the date.
 
 Example:
 
 ```text
-SOURCE_MASTER_DATABASE_URL=postgresql://SOURCE_USER:SOURCE_PASSWORD@SOURCE_HOST/masterdb?sslmode=require&channel_binding=require
-DESTINATION_MASTER_DATABASE_URL=postgresql://DEST_USER:DEST_PASSWORD@DEST_HOST/masterdb?sslmode=require&channel_binding=require
+PRIMARY_MASTER_DATABASE_URL=postgresql://PRIMARY_USER:PRIMARY_PASSWORD@PRIMARY_HOST/masterdb?sslmode=require&channel_binding=require
+MIRROR_MASTER_DATABASE_URL=postgresql://MIRROR_USER:MIRROR_PASSWORD@MIRROR_HOST/masterdb?sslmode=require&channel_binding=require
 ```
+
+## Sync Direction
+
+By default, `SYNC_DIRECTION=auto`:
+
+- IST day 1-15: primary -> mirror
+- IST day 16-month end: mirror -> primary
+
+For manual testing, you can add a repository variable named `SYNC_DIRECTION`:
+
+- `auto`
+- `primary-to-mirror`
+- `mirror-to-primary`
 
 The workflow will automatically sync:
 
@@ -37,6 +50,11 @@ order by database_name;
 ```
 
 It also creates missing destination tenant databases before syncing them.
+
+The older master-source/master-destination mode is still supported with these secrets:
+
+- `SOURCE_MASTER_DATABASE_URL`
+- `DESTINATION_MASTER_DATABASE_URL`
 
 Manual pair configuration is still supported with this repository secret:
 
@@ -68,11 +86,12 @@ The older single-database mode is also still supported with these secrets:
 
 Do not commit database URLs or passwords into the repository.
 
-## Optional GitHub Variable
+## Optional GitHub Variables
 
 Add this repository variable only if you want to skip table data:
 
 - `NEON_SYNC_EXCLUDED_TABLES`: comma-separated table names, for example `public.audit_logs,public.sessions`
+- `TENANT_DATABASE_QUERY`: custom SQL query for discovering tenant database names, if `public.tenants.database_name` changes later.
 
 ## Schedule
 
@@ -84,6 +103,7 @@ You can also run it manually from GitHub:
 
 ## Behavior
 
+- Chooses sync direction automatically from the IST date.
 - Runs each configured database pair separately.
 - In master-based mode, discovers tenant database names from `masterdb`.
 - Creates missing destination tenant databases.
