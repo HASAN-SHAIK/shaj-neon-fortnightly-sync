@@ -59,6 +59,7 @@ jobs:
           SYNC_DIRECTION: ${{ vars.SYNC_DIRECTION }}
           TENANT_DATABASE_QUERY: ${{ vars.TENANT_DATABASE_QUERY }}
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_ENV_GROUP_ID: ${{ vars.RENDER_ENV_GROUP_ID }}
           RENDER_SERVICE_IDS: ${{ vars.RENDER_SERVICE_IDS }}
           RENDER_DATABASE_ENV_KEY: ${{ vars.RENDER_DATABASE_ENV_KEY }}
           RENDER_DEPLOY_MODE: ${{ vars.RENDER_DEPLOY_MODE }}

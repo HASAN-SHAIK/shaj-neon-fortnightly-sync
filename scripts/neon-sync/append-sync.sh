@@ -552,18 +552,13 @@ NODE
 }
 
 update_render_services() {
-  if [[ -z "${RENDER_API_KEY:-}" && -z "${RENDER_SERVICE_IDS:-}" ]]; then
-    echo "Render env update skipped: RENDER_API_KEY and RENDER_SERVICE_IDS are not configured."
+  if [[ -z "${RENDER_API_KEY:-}" && -z "${RENDER_SERVICE_IDS:-}" && -z "${RENDER_ENV_GROUP_ID:-}" ]]; then
+    echo "Render env update skipped: RENDER_API_KEY, RENDER_ENV_GROUP_ID, and RENDER_SERVICE_IDS are not configured."
     return
   fi
 
   if [[ -z "${RENDER_API_KEY:-}" ]]; then
-    echo "RENDER_API_KEY is required when RENDER_SERVICE_IDS is configured." >&2
-    exit 1
-  fi
-
-  if [[ -z "${RENDER_SERVICE_IDS:-}" ]]; then
-    echo "RENDER_SERVICE_IDS is required when RENDER_API_KEY is configured." >&2
+    echo "RENDER_API_KEY is required when Render env updates are configured." >&2
     exit 1
   fi
 
@@ -583,14 +578,15 @@ update_render_services() {
   echo "::group::Update Render services"
   echo "Updating Render env key $env_key to the active master database URL."
 
-  node - "$RENDER_SERVICE_IDS" "$env_key" "$SOURCE_MASTER_DATABASE_URL" "$deploy_mode" <<'NODE'
+  node - "${RENDER_SERVICE_IDS:-}" "${RENDER_ENV_GROUP_ID:-}" "$env_key" "$SOURCE_MASTER_DATABASE_URL" "$deploy_mode" <<'NODE'
 const serviceIds = process.argv[2]
   .split(',')
   .map((value) => value.trim())
   .filter(Boolean);
-const envKey = process.argv[3];
-const databaseUrl = process.argv[4];
-const deployMode = process.argv[5];
+const envGroupId = process.argv[3];
+const envKey = process.argv[4];
+const databaseUrl = process.argv[5];
+const deployMode = process.argv[6];
 const apiKey = process.env.RENDER_API_KEY;
 
 function encodePath(value) {
@@ -616,22 +612,36 @@ async function renderRequest(url, options) {
   return text ? JSON.parse(text) : null;
 }
 
-if (!serviceIds.length) {
-  console.error('RENDER_SERVICE_IDS must contain at least one Render service ID.');
-  process.exit(1);
-}
-
-for (const serviceId of serviceIds) {
-  console.log(`Updating Render service ${serviceId}...`);
-
+if (envGroupId) {
+  console.log(`Updating Render env group ${envGroupId}...`);
   await renderRequest(
-    `https://api.render.com/v1/services/${encodePath(serviceId)}/env-vars/${encodePath(envKey)}`,
+    `https://api.render.com/v1/env-groups/${encodePath(envGroupId)}/env-vars/${encodePath(envKey)}`,
     {
       method: 'PUT',
       body: JSON.stringify({ value: databaseUrl }),
     },
   );
+  console.log(`Render env group ${envGroupId} updated.`);
+} else {
+  if (!serviceIds.length) {
+    console.error('RENDER_SERVICE_IDS must contain at least one Render service ID when RENDER_ENV_GROUP_ID is not set.');
+    process.exit(1);
+  }
 
+  for (const serviceId of serviceIds) {
+    console.log(`Updating Render service ${serviceId}...`);
+    await renderRequest(
+      `https://api.render.com/v1/services/${encodePath(serviceId)}/env-vars/${encodePath(envKey)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ value: databaseUrl }),
+      },
+    );
+  }
+}
+
+for (const serviceId of serviceIds) {
+  console.log(`Triggering Render deploy for ${serviceId}...`);
   await renderRequest(
     `https://api.render.com/v1/services/${encodePath(serviceId)}/deploys`,
     {

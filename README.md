@@ -104,11 +104,12 @@ Add this repository secret:
 
 Add these repository variables:
 
+- `RENDER_ENV_GROUP_ID`: Render env group ID, for example `evg-d7g7fka8qa3s73dkgp30`
 - `RENDER_SERVICE_IDS`: comma-separated Render service IDs, for example `srv-abc123,srv-def456`
 - `RENDER_DATABASE_ENV_KEY`: optional, defaults to `DATABASE_URL`
 - `RENDER_DEPLOY_MODE`: optional, defaults to `build_and_deploy`; use `deploy_only` if your app only needs a runtime redeploy
 
-After verification passes, the workflow updates the configured Render env var to the active `masterdb` URL and triggers a Render deploy for each service.
+After verification passes, the workflow updates the configured Render env group variable to the active `masterdb` URL and triggers a Render deploy for each service. If `RENDER_ENV_GROUP_ID` is not set, it updates service-level env vars instead.
 
 ## Schedule
 
