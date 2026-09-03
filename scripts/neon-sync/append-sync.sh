@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-if [[ -d "/usr/lib/postgresql/17/bin" ]]; then
+if [[ -d "/usr/lib/postgresql/18/bin" ]]; then
+  export PATH="/usr/lib/postgresql/18/bin:$PATH"
+elif [[ -d "/usr/lib/postgresql/17/bin" ]]; then
   export PATH="/usr/lib/postgresql/17/bin:$PATH"
 fi
 
