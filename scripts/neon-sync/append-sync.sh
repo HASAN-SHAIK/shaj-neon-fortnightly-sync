@@ -551,6 +551,102 @@ console.log(`create database ${identifier};`);
 NODE
 }
 
+update_render_services() {
+  if [[ -z "${RENDER_API_KEY:-}" && -z "${RENDER_SERVICE_IDS:-}" ]]; then
+    echo "Render env update skipped: RENDER_API_KEY and RENDER_SERVICE_IDS are not configured."
+    return
+  fi
+
+  if [[ -z "${RENDER_API_KEY:-}" ]]; then
+    echo "RENDER_API_KEY is required when RENDER_SERVICE_IDS is configured." >&2
+    exit 1
+  fi
+
+  if [[ -z "${RENDER_SERVICE_IDS:-}" ]]; then
+    echo "RENDER_SERVICE_IDS is required when RENDER_API_KEY is configured." >&2
+    exit 1
+  fi
+
+  if [[ -z "${SOURCE_MASTER_DATABASE_URL:-}" ]]; then
+    echo "Render env update requires SOURCE_MASTER_DATABASE_URL to be selected." >&2
+    exit 1
+  fi
+
+  local env_key="${RENDER_DATABASE_ENV_KEY:-DATABASE_URL}"
+  local deploy_mode="${RENDER_DEPLOY_MODE:-build_and_deploy}"
+
+  if [[ "$deploy_mode" != "build_and_deploy" && "$deploy_mode" != "deploy_only" ]]; then
+    echo "RENDER_DEPLOY_MODE must be build_and_deploy or deploy_only." >&2
+    exit 2
+  fi
+
+  echo "::group::Update Render services"
+  echo "Updating Render env key $env_key to the active master database URL."
+
+  node - "$RENDER_SERVICE_IDS" "$env_key" "$SOURCE_MASTER_DATABASE_URL" "$deploy_mode" <<'NODE'
+const serviceIds = process.argv[2]
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
+const envKey = process.argv[3];
+const databaseUrl = process.argv[4];
+const deployMode = process.argv[5];
+const apiKey = process.env.RENDER_API_KEY;
+
+function encodePath(value) {
+  return encodeURIComponent(value);
+}
+
+async function renderRequest(url, options) {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      accept: 'application/json',
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json',
+      ...(options.headers || {}),
+    },
+  });
+
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`${response.status} ${response.statusText}: ${text}`);
+  }
+
+  return text ? JSON.parse(text) : null;
+}
+
+if (!serviceIds.length) {
+  console.error('RENDER_SERVICE_IDS must contain at least one Render service ID.');
+  process.exit(1);
+}
+
+for (const serviceId of serviceIds) {
+  console.log(`Updating Render service ${serviceId}...`);
+
+  await renderRequest(
+    `https://api.render.com/v1/services/${encodePath(serviceId)}/env-vars/${encodePath(envKey)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ value: databaseUrl }),
+    },
+  );
+
+  await renderRequest(
+    `https://api.render.com/v1/services/${encodePath(serviceId)}/deploys`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ deployMode }),
+    },
+  );
+
+  console.log(`Render deploy triggered for ${serviceId}.`);
+}
+NODE
+
+  echo "::endgroup::"
+}
+
 pair_file="$(mktemp)"
 trap 'rm -f "$pair_file"' EXIT
 configure_alternating_master_urls
@@ -565,3 +661,4 @@ while IFS=$'\t' read -r label source_url destination_url excluded_tables; do
 done < "$pair_file"
 
 echo "All configured Neon database syncs completed successfully."
+update_render_services

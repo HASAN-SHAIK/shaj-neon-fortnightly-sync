@@ -92,6 +92,23 @@ Add this repository variable only if you want to skip table data:
 
 - `NEON_SYNC_EXCLUDED_TABLES`: comma-separated table names, for example `public.audit_logs,public.sessions`
 - `TENANT_DATABASE_QUERY`: custom SQL query for discovering tenant database names, if `public.tenants.database_name` changes later.
+- `SYNC_DIRECTION`: use `auto`, `primary-to-mirror`, or `mirror-to-primary`.
+
+## Optional Render Update
+
+The workflow can update Render after a successful sync so your app points to the active database for the current half month.
+
+Add this repository secret:
+
+- `RENDER_API_KEY`
+
+Add these repository variables:
+
+- `RENDER_SERVICE_IDS`: comma-separated Render service IDs, for example `srv-abc123,srv-def456`
+- `RENDER_DATABASE_ENV_KEY`: optional, defaults to `DATABASE_URL`
+- `RENDER_DEPLOY_MODE`: optional, defaults to `build_and_deploy`; use `deploy_only` if your app only needs a runtime redeploy
+
+After verification passes, the workflow updates the configured Render env var to the active `masterdb` URL and triggers a Render deploy for each service.
 
 ## Schedule
 
@@ -113,5 +130,6 @@ You can also run it manually from GitHub:
 - Uses `ON CONFLICT DO NOTHING`, so rows that already exist by primary key or unique constraint are skipped.
 - Does not delete destination data.
 - Verifies after each database sync that destination has every source table, every source column with the same type, and at least the source row count for each non-excluded table.
+- Optionally updates Render service env vars and triggers deploys after verification.
 
 If a table has no primary key or unique constraint, repeated runs can duplicate its rows. Add a unique key to those tables if they must remain deduplicated.
