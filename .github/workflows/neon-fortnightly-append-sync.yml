@@ -49,7 +49,10 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || steps.sync-day.outputs.should_sync == 'true'
         env:
           NEON_DATABASE_PAIRS_JSON: ${{ secrets.NEON_DATABASE_PAIRS_JSON }}
+          SOURCE_MASTER_DATABASE_URL: ${{ secrets.SOURCE_MASTER_DATABASE_URL }}
+          DESTINATION_MASTER_DATABASE_URL: ${{ secrets.DESTINATION_MASTER_DATABASE_URL }}
           SOURCE_DATABASE_URL: ${{ secrets.NEON_SOURCE_DATABASE_URL }}
           DESTINATION_DATABASE_URL: ${{ secrets.NEON_DESTINATION_DATABASE_URL }}
           EXCLUDED_TABLES: ${{ vars.NEON_SYNC_EXCLUDED_TABLES }}
+          TENANT_DATABASE_QUERY: ${{ vars.TENANT_DATABASE_QUERY }}
         run: bash scripts/neon-sync/append-sync.sh

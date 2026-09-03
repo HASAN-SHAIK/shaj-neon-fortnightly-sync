@@ -70,6 +70,69 @@ NODE
     return
   fi
 
+  if [[ -n "${SOURCE_MASTER_DATABASE_URL:-}" || -n "${DESTINATION_MASTER_DATABASE_URL:-}" ]]; then
+    if [[ -z "${SOURCE_MASTER_DATABASE_URL:-}" ]]; then
+      echo "SOURCE_MASTER_DATABASE_URL secret is missing." >&2
+      exit 1
+    fi
+
+    if [[ -z "${DESTINATION_MASTER_DATABASE_URL:-}" ]]; then
+      echo "DESTINATION_MASTER_DATABASE_URL secret is missing." >&2
+      exit 1
+    fi
+
+    validate_database_url "SOURCE_MASTER_DATABASE_URL" "$SOURCE_MASTER_DATABASE_URL"
+    validate_database_url "DESTINATION_MASTER_DATABASE_URL" "$DESTINATION_MASTER_DATABASE_URL"
+
+    local tenant_file
+    tenant_file="$(mktemp)"
+
+    local tenant_query="${TENANT_DATABASE_QUERY:-select distinct database_name from public.tenants where database_name is not null and btrim(database_name) <> '' order by database_name;}"
+
+    echo "Discovering tenant databases from source master database..."
+    psql "$SOURCE_MASTER_DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "$tenant_query" > "$tenant_file"
+
+    node - "$pair_file" "$tenant_file" <<'NODE'
+const fs = require('fs');
+
+const [outputPath, tenantPath] = process.argv.slice(2);
+
+function setDatabaseName(rawUrl, databaseName) {
+  const url = new URL(rawUrl);
+  url.pathname = `/${databaseName}`;
+  return url.toString();
+}
+
+const sourceMaster = process.env.SOURCE_MASTER_DATABASE_URL;
+const destinationMaster = process.env.DESTINATION_MASTER_DATABASE_URL;
+const tenantNames = fs.readFileSync(tenantPath, 'utf8')
+  .split(/\r?\n/)
+  .map((line) => line.trim())
+  .filter(Boolean);
+
+const rows = [
+  ['masterdb', sourceMaster, destinationMaster, ''],
+  ...tenantNames.map((databaseName) => [
+    databaseName,
+    setDatabaseName(sourceMaster, databaseName),
+    setDatabaseName(destinationMaster, databaseName),
+    '',
+  ]),
+];
+
+fs.writeFileSync(
+  outputPath,
+  rows.map((row) => row.map((value) => String(value).replace(/\t/g, ' ')).join('\t')).join('\n') + '\n',
+);
+
+console.log(`Configured database pairs: ${rows.length}`);
+console.log(`Discovered tenant databases: ${tenantNames.length}`);
+NODE
+
+    rm -f "$tenant_file"
+    return
+  fi
+
   if [[ -z "${SOURCE_DATABASE_URL:-}" ]]; then
     echo "SOURCE_DATABASE_URL secret is missing." >&2
     exit 1
@@ -247,12 +310,30 @@ NODE
   echo "::endgroup::"
 }
 
+ensure_destination_database() {
+  local admin_url="$1"
+  local database_name="$2"
+
+  local create_database_sql="
+select format('create database %I', :'database_name')
+where not exists (
+  select 1 from pg_database where datname = :'database_name'
+);
+"
+
+  echo "Ensuring destination database exists for $database_name..."
+  psql "$admin_url" -v ON_ERROR_STOP=1 -v database_name="$database_name" -Atc "$create_database_sql" | psql "$admin_url" -v ON_ERROR_STOP=1
+}
+
 pair_file="$(mktemp)"
 trap 'rm -f "$pair_file"' EXIT
 build_pair_file "$pair_file"
 
 while IFS=$'\t' read -r label source_url destination_url excluded_tables; do
   [[ -z "${label:-}" ]] && continue
+  if [[ -n "${DESTINATION_MASTER_DATABASE_URL:-}" && "$label" != "masterdb" ]]; then
+    ensure_destination_database "$DESTINATION_MASTER_DATABASE_URL" "$label"
+  fi
   sync_pair "$label" "$source_url" "$destination_url" "${excluded_tables:-}"
 done < "$pair_file"
 

@@ -9,11 +9,40 @@ Recommended Neon project names:
 
 ## GitHub Secrets
 
-For a master database plus tenant databases, add this repository secret:
+For your master database plus tenant database architecture, add these repository secrets:
+
+- `SOURCE_MASTER_DATABASE_URL`
+- `DESTINATION_MASTER_DATABASE_URL`
+
+Use raw Neon PostgreSQL URLs for the `masterdb` database. The sync job reads tenant database names from `public.tenants.database_name` in `masterdb`, then syncs each matching tenant database separately.
+
+Example:
+
+```text
+SOURCE_MASTER_DATABASE_URL=postgresql://SOURCE_USER:SOURCE_PASSWORD@SOURCE_HOST/masterdb?sslmode=require&channel_binding=require
+DESTINATION_MASTER_DATABASE_URL=postgresql://DEST_USER:DEST_PASSWORD@DEST_HOST/masterdb?sslmode=require&channel_binding=require
+```
+
+The workflow will automatically sync:
+
+- `masterdb`
+- every tenant DB listed by this query:
+
+```sql
+select distinct database_name
+from public.tenants
+where database_name is not null
+  and btrim(database_name) <> ''
+order by database_name;
+```
+
+It also creates missing destination tenant databases before syncing them.
+
+Manual pair configuration is still supported with this repository secret:
 
 - `NEON_DATABASE_PAIRS_JSON`
 
-Example value:
+Example manual value:
 
 ```json
 [
@@ -32,7 +61,7 @@ Example value:
 
 Each source tenant database needs its own matching destination tenant database.
 
-The older single-database mode is still supported with these secrets:
+The older single-database mode is also still supported with these secrets:
 
 - `NEON_SOURCE_DATABASE_URL`: connection string for `shaj-retail-primary`
 - `NEON_DESTINATION_DATABASE_URL`: connection string for `shaj-retail-fortnightly-mirror`
@@ -56,6 +85,8 @@ You can also run it manually from GitHub:
 ## Behavior
 
 - Runs each configured database pair separately.
+- In master-based mode, discovers tenant database names from `masterdb`.
+- Creates missing destination tenant databases.
 - Creates any missing schema objects from the source schema where possible.
 - Adds missing destination columns before importing data.
 - Appends source rows into the destination.
