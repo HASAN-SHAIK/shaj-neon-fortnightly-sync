@@ -1,0 +1,95 @@
+name: V1 Neon sync idempotency runtime
+
+on:
+  pull_request:
+    paths:
+      - "scripts/neon-sync/**"
+      - "tests/neon-sync-idempotency-runtime.sh"
+      - ".github/workflows/v1-neon-sync-idempotency-runtime.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - name: Checkout exact head
+        uses: actions/checkout@v4
+
+      - name: Record exact head
+        run: |
+          echo "NEON_SYNC_TEST_HEAD=$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+
+      - name: Install PostgreSQL 18 client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates curl
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-18
+          echo "/usr/lib/postgresql/18/bin" >> "$GITHUB_PATH"
+          export PATH="/usr/lib/postgresql/18/bin:$PATH"
+          psql --version
+          pg_dump --version
+
+      - name: Smallest automated checks
+        run: |
+          bash -n scripts/neon-sync/append-sync.sh
+          bash -n tests/neon-sync-idempotency-runtime.sh
+
+      - name: Create isolated source and destination databases
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+          create database shaj_source;
+          create database shaj_destination;
+          SQL
+
+          psql -h 127.0.0.1 -U postgres -d shaj_source -v ON_ERROR_STOP=1 <<'SQL'
+          create table public.products (
+            id bigint primary key,
+            sku text unique not null,
+            name text not null
+          );
+          insert into public.products (id, sku, name) values
+            (1, 'SKU-001', 'Tea'),
+            (2, 'SKU-002', 'Coffee');
+          SQL
+
+          psql -h 127.0.0.1 -U postgres -d shaj_destination -v ON_ERROR_STOP=1 <<'SQL'
+          create table public.products (
+            id bigint primary key,
+            sku text unique not null,
+            name text not null
+          );
+          insert into public.products (id, sku, name)
+          values (99, 'DEST-ONLY', 'Local retained row');
+          SQL
+
+      - name: Run real append sync twice and verify observable PostgreSQL state
+        env:
+          SOURCE_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/shaj_source
+          DESTINATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/shaj_destination
+          EXCLUDED_TABLES: ""
+        run: bash tests/neon-sync-idempotency-runtime.sh
