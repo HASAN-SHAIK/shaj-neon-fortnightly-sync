@@ -24,7 +24,7 @@ if [[ "$status" -ne 2 ]]; then
   exit 1
 fi
 
-if ! grep -Fq 'SOURCE_DATABASE_URL must be only the postgresql:// connection URL, not a full psql command.' "$log"; then
+if ! grep -Fq 'default source must be only the postgresql:// connection URL, not a full psql command.' "$log"; then
   echo "Expected fail-closed validation message was not emitted" >&2
   exit 1
 fi
