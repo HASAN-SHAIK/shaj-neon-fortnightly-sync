@@ -69,6 +69,32 @@ jobs:
         run: bash -n tests/neon-sync-conflicting-row-divergence-runtime.sh
 
       - name: Real conflicting row divergence runtime
+        id: runtime
+        continue-on-error: true
         env:
           PGPASSWORD: postgres
-        run: bash tests/neon-sync-conflicting-row-divergence-runtime.sh
+        shell: bash
+        run: |
+          set +e
+          bash tests/neon-sync-conflicting-row-divergence-runtime.sh 2>&1 | tee conflicting-row-runtime.log
+          code=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$code" > conflicting-row-runtime.exit
+          exit "$code"
+
+      - name: Upload conflicting row runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cycle-d-conflicting-row-evidence
+          path: |
+            conflicting-row-runtime.log
+            conflicting-row-runtime.exit
+
+      - name: Enforce certification result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(cat conflicting-row-runtime.exit)"
+          test "$code" -eq 0
