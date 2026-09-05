@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE_DB="cycle_d_source"
+SOURCE_ADMIN_URL="postgresql://postgres:postgres@127.0.0.1:5432/postgres"
 SOURCE_URL="postgresql://postgres:postgres@127.0.0.1:5432/${SOURCE_DB}"
 DEST_URL="postgresql://postgres:postgres@127.0.0.1:65433/unreachable_destination?connect_timeout=2"
 LOG_FILE="$(mktemp)"
@@ -12,7 +13,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-createdb "$SOURCE_DB"
+createdb "$SOURCE_DB" --maintenance-db="$SOURCE_ADMIN_URL"
 psql "$SOURCE_URL" -v ON_ERROR_STOP=1 <<'SQL'
 create table public.source_guard (
   id bigint primary key,
