@@ -65,7 +65,7 @@ if [[ "$after_trigger" != "O" ]]; then
 fi
 
 audit_before="$(psql "$DESTINATION_DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "select count(*) from public.product_audit")"
-psql "$DESTINATION_DATABASE_URL" -v ON_ERROR_STOP=1 -c "insert into public.products (sku, name, quantity) values ('DEST-AFTER-FAILURE', 'Destination write after failure', 3);" >/dev/null
+psql "$DESTINATION_DATABASE_URL" -v ON_ERROR_STOP=1 -c "insert into public.products (id, sku, name, quantity) values (101, 'DEST-AFTER-FAILURE', 'Destination write after failure', 3);" >/dev/null
 audit_after="$(psql "$DESTINATION_DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "select count(*) from public.product_audit")"
 
 echo "NEON_ATOMICITY_AUDIT_BEFORE_POST_WRITE=$audit_before"
