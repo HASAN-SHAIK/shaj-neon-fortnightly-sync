@@ -1,0 +1,36 @@
+name: V1 Neon Invalid Database URL Runtime
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact pull request head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Assert exact head
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          echo "EXACT_HEAD=$(git rev-parse HEAD)"
+
+      - name: Production script syntax
+        run: bash -n scripts/neon-sync/append-sync.sh
+
+      - name: Focused runtime syntax
+        run: bash -n tests/neon-sync-invalid-database-url-runtime.sh
+
+      - name: Execute real production validation path
+        run: bash tests/neon-sync-invalid-database-url-runtime.sh
