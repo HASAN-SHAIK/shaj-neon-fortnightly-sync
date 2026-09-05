@@ -1,0 +1,71 @@
+name: V1 Neon Source Connection Failure Runtime
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=2s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - name: Checkout exact pull request head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Assert exact head
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          echo "EXACT_HEAD=$(git rev-parse HEAD)"
+
+      - name: Install PostgreSQL 18 client
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-18 || sudo apt-get install -y postgresql-client
+          psql --version
+          pg_dump --version
+
+      - name: Automated shell checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/neon-sync/append-sync.sh
+          bash -n tests/neon-sync-source-connection-failure-runtime.sh
+
+      - name: Create isolated destination database
+        env:
+          PGPASSWORD: postgres
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'create database cycle_d_destination;'
+
+      - name: Real production source-failure runtime
+        env:
+          DESTINATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/cycle_d_destination
+          SOURCE_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:65432/unreachable_source?connect_timeout=2
+        shell: bash
+        run: bash tests/neon-sync-source-connection-failure-runtime.sh
