@@ -58,6 +58,7 @@ fi
 
 guard_before="$(psql "$DEST_MASTER_URL" -Atc "select value from public.destination_guard where id=1;")"
 
+set +e
 SOURCE_MASTER_DATABASE_URL="$SOURCE_MASTER_URL" \
 DESTINATION_MASTER_DATABASE_URL="$DEST_MASTER_URL" \
 NOTIFY_EMAIL_TO='' \
@@ -65,8 +66,12 @@ RENDER_API_KEY='' \
 RENDER_SERVICE_IDS='' \
 RENDER_ENV_GROUP_ID='' \
   bash "$ROOT_DIR/scripts/neon-sync/append-sync.sh" >"$LOG_FILE" 2>&1
+sync_exit=$?
+set -e
 
 cat "$LOG_FILE"
+echo "NEON_TENANT_SYNC_EXIT=$sync_exit"
+test "$sync_exit" = '0'
 
 dest_tenant_exists="$(psql "$DEST_ADMIN_URL" -Atc "select count(*) from pg_database where datname='${TENANT_DB}';")"
 master_tenant_count="$(psql "$DEST_MASTER_URL" -Atc "select count(*) from public.tenants where database_name='${TENANT_DB}';")"
