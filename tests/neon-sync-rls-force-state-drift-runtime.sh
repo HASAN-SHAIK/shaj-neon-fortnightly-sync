@@ -3,13 +3,13 @@ set -Eeuo pipefail
 export PATH="/usr/lib/postgresql/18/bin:$PATH"
 SOURCE_ADMIN_URL='postgresql://postgres:postgres@127.0.0.1:55432/postgres'
 DESTINATION_ADMIN_URL='postgresql://postgres:postgres@127.0.0.1:55433/postgres'
-SOURCE_URL='postgresql://cycle_owner@127.0.0.1:55432/cycle_d_source'
-DESTINATION_URL='postgresql://cycle_owner@127.0.0.1:55433/cycle_d_destination'
+SOURCE_URL='postgresql://cycle_owner:cycle@127.0.0.1:55432/cycle_d_source'
+DESTINATION_URL='postgresql://cycle_owner:cycle@127.0.0.1:55433/cycle_d_destination'
 SOURCE_POSTGRES_URL='postgresql://postgres:postgres@127.0.0.1:55432/cycle_d_source'
 DESTINATION_POSTGRES_URL='postgresql://postgres:postgres@127.0.0.1:55433/cycle_d_destination'
 
-psql "$SOURCE_ADMIN_URL" -v ON_ERROR_STOP=1 -c "create role cycle_owner login;"
-psql "$DESTINATION_ADMIN_URL" -v ON_ERROR_STOP=1 -c "create role cycle_owner login;"
+psql "$SOURCE_ADMIN_URL" -v ON_ERROR_STOP=1 -c "create role cycle_owner login password 'cycle';"
+psql "$DESTINATION_ADMIN_URL" -v ON_ERROR_STOP=1 -c "create role cycle_owner login password 'cycle';"
 psql "$SOURCE_ADMIN_URL" -v ON_ERROR_STOP=1 -c "create database cycle_d_source owner cycle_owner;"
 psql "$DESTINATION_ADMIN_URL" -v ON_ERROR_STOP=1 -c "create database cycle_d_destination owner cycle_owner;"
 
