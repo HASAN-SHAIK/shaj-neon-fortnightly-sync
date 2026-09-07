@@ -28,7 +28,8 @@ create function public.pricing_guard() returns text language sql as $$select 'sa
 alter function public.pricing_guard() owner to cycle_owner;
 revoke all on function public.pricing_guard() from public;
 grant execute on function public.pricing_guard() to cycle_app;
-grant usage on schema public to cycle_other, cycle_app;
+grant usage, create on schema public to cycle_other;
+grant usage on schema public to cycle_app;
 SQL
 
 psql "$DESTINATION_ADMIN_URL" -v ON_ERROR_STOP=1 <<'SQL'
@@ -38,7 +39,8 @@ create function public.pricing_guard() returns text language sql as $$select 'sa
 alter function public.pricing_guard() owner to cycle_other;
 revoke all on function public.pricing_guard() from public;
 grant execute on function public.pricing_guard() to cycle_app;
-grant usage on schema public to cycle_other, cycle_app;
+grant usage, create on schema public to cycle_other;
+grant usage on schema public to cycle_app;
 SQL
 
 owner_of_function() {
