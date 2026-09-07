@@ -21,9 +21,10 @@ psql "$DESTINATION_ROOT_URL" -v ON_ERROR_STOP=1 -c 'create database cycle_d_dest
 
 psql "$SOURCE_ADMIN_URL" -v ON_ERROR_STOP=1 <<'SQL'
 create table public.products (id bigint primary key, sku text not null, quantity integer not null);
-insert into public.products values (1,'SOURCE-SKU-1',7),(2,'SOURCE-SKU-2',11);
-create materialized view public.stock_rollup as select id, sku, quantity from public.products where id=1;
+insert into public.products values (1,'SOURCE-SKU-1',7);
+create materialized view public.stock_rollup as select id, sku, quantity from public.products;
 alter materialized view public.stock_rollup owner to cycle_owner;
+insert into public.products values (2,'SOURCE-SKU-2',11);
 grant usage on schema public to cycle_other, cycle_app;
 grant select on public.products to cycle_owner, cycle_other;
 grant select on public.stock_rollup to cycle_app;
@@ -32,7 +33,7 @@ SQL
 psql "$DESTINATION_ADMIN_URL" -v ON_ERROR_STOP=1 <<'SQL'
 create table public.products (id bigint primary key, sku text not null, quantity integer not null);
 insert into public.products values (1,'SOURCE-SKU-1',7);
-create materialized view public.stock_rollup as select id, sku, quantity from public.products where id=1;
+create materialized view public.stock_rollup as select id, sku, quantity from public.products;
 alter materialized view public.stock_rollup owner to cycle_other;
 grant usage on schema public to cycle_other, cycle_app;
 grant select on public.products to cycle_owner, cycle_other;
@@ -96,7 +97,7 @@ printf 'destination cycle_app rows before final refresh=%s\n' "$destination_app_
 printf 'destination cycle_other refresh exit=%s\ndestination cycle_other refresh output=%s\n' "$destination_refresh_after_exit" "$destination_refresh_after_output"
 printf 'destination cycle_app rows after final refresh=%s\nNEON_MATVIEW_OWNER_DRIFT_SYNC_EXIT=%s\n' "$destination_app_after_final" "$sync_exit"
 
-if [[ "$destination_owner_after" == cycle_owner && "$destination_base_row_2" == '2|SOURCE-SKU-2|11' && "$destination_refresh_after_exit" -ne 0 ]]; then
+if [[ "$destination_owner_after" == cycle_owner && "$destination_base_row_2" == '2|SOURCE-SKU-2|11' && "$destination_app_before_final" == '1|SOURCE-SKU-1|7' && "$destination_refresh_after_exit" -ne 0 ]]; then
   echo 'NEON_MATVIEW_OWNER_DRIFT_DETECTED=true'
   exit 0
 fi
