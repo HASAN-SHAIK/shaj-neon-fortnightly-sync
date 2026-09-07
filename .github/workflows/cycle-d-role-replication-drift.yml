@@ -91,6 +91,15 @@ jobs:
             role-replication-drift-runtime.log
             role-replication-drift-runtime.exit
 
+      - name: Confirm runtime reached product verdict
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f role-replication-drift-runtime.exit
+          code="$(cat role-replication-drift-runtime.exit)"
+          test "$code" -ne 2
+
       - name: Enforce certification result
         if: always()
         shell: bash
