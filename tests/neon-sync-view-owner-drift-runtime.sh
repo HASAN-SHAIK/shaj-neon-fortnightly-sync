@@ -28,6 +28,7 @@ create view public.stock_snapshot as select id, sku, quantity from public.produc
 alter view public.stock_snapshot owner to cycle_owner;
 grant usage, create on schema public to cycle_other;
 grant usage on schema public to cycle_app;
+grant select on public.products to cycle_owner, cycle_other;
 grant select on public.stock_snapshot to cycle_app;
 SQL
 
@@ -38,6 +39,7 @@ create view public.stock_snapshot as select id, sku, quantity from public.produc
 alter view public.stock_snapshot owner to cycle_other;
 grant usage, create on schema public to cycle_other;
 grant usage on schema public to cycle_app;
+grant select on public.products to cycle_owner, cycle_other;
 grant select on public.stock_snapshot to cycle_app;
 SQL
 
@@ -90,7 +92,6 @@ if [[ "$source_owner_before" != 'cycle_owner' || "$destination_owner_before" != 
   exit 2
 fi
 
-# Restore destination view semantics before production synchronization while preserving ownership drift.
 replace_view_as_other "$DESTINATION_OTHER_URL" 'quantity' >/dev/null
 [[ "$(owner_of_view "$DESTINATION_POSTGRES_URL")" == 'cycle_other' ]]
 [[ "$(view_value_as_app "$DESTINATION_APP_URL")" == '1|SOURCE-SKU-1|7' ]]
