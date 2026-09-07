@@ -17,6 +17,8 @@ for root_url in "$SOURCE_ROOT_URL" "$DESTINATION_ROOT_URL"; do
 done
 psql "$SOURCE_ROOT_URL" -v ON_ERROR_STOP=1 -c 'create database cycle_d_source;'
 psql "$DESTINATION_ROOT_URL" -v ON_ERROR_STOP=1 -c 'create database cycle_d_destination;'
+psql "$SOURCE_ROOT_URL" -v ON_ERROR_STOP=1 -c 'grant create on database cycle_d_source to cycle_other;'
+psql "$DESTINATION_ROOT_URL" -v ON_ERROR_STOP=1 -c 'grant create on database cycle_d_destination to cycle_other;'
 
 psql "$SOURCE_ADMIN_URL" -v ON_ERROR_STOP=1 <<'SQL'
 create table public.products (id bigint primary key, sku text not null, quantity integer not null);
