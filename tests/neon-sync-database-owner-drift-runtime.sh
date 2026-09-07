@@ -41,10 +41,10 @@ set_read_only_as_other() {
   local db="$2"
   psql "$url" -v ON_ERROR_STOP=1 -c "alter database \"$db\" set default_transaction_read_only = on;"
 }
-reset_read_only_as_other() {
-  local url="$1"
+reset_read_only_from_root() {
+  local root_url="$1"
   local db="$2"
-  psql "$url" -v ON_ERROR_STOP=1 -c "alter database \"$db\" reset default_transaction_read_only;"
+  psql "$root_url" -v ON_ERROR_STOP=1 -c "alter database \"$db\" reset default_transaction_read_only;"
 }
 
 source_owner_before="$(owner_of_database "$SOURCE_ADMIN_URL")"
@@ -64,8 +64,8 @@ if [[ "$source_owner_before" != cycle_owner || "$destination_owner_before" != cy
   exit 2
 fi
 
-# Restore destination database configuration before production synchronization while preserving owner drift.
-reset_read_only_as_other "$DESTINATION_OTHER_URL" cycle_d_destination
+# Restore destination database configuration from the unaffected postgres database before production sync.
+reset_read_only_from_root "$DESTINATION_ROOT_URL" cycle_d_destination
 pre_sync_read_only="$(psql "$DESTINATION_APP_URL" -v ON_ERROR_STOP=1 -Atc 'show default_transaction_read_only;')"
 if [[ "$pre_sync_read_only" != off ]]; then
   echo "Destination read-only setting did not restore before sync: $pre_sync_read_only" >&2
