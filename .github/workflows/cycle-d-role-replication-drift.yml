@@ -100,6 +100,14 @@ jobs:
           code="$(cat role-replication-drift-runtime.exit)"
           test "$code" -ne 2
 
+      - name: Confirm production false-success boundary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'NEON_ROLE_REPLICATION_DRIFT_SYNC_EXIT=0' role-replication-drift-runtime.log
+          grep -Fxq 'NEON_ROLE_REPLICATION_DRIFT_DETECTED=false' role-replication-drift-runtime.log
+
       - name: Enforce certification result
         if: always()
         shell: bash
