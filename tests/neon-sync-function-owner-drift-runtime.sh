@@ -45,25 +45,29 @@ owner_of_function() {
   local url="$1"
   psql "$url" -v ON_ERROR_STOP=1 -Atc "select pg_get_userbyid(p.proowner) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='pricing_guard' and pg_get_function_identity_arguments(p.oid)='';"
 }
-
 function_value() {
   local url="$1"
-  psql "$url" -v ON_ERROR_STOP=1 -Atc "select public.pricing_guard();"
+  psql "$url" -v ON_ERROR_STOP=1 -Atc 'select public.pricing_guard();'
+}
+replace_as_other() {
+  local url="$1"
+  local value="$2"
+  psql "$url" -v ON_ERROR_STOP=1 -c "create or replace function public.pricing_guard() returns text language sql as 'select ''${value}''::text';"
 }
 
 source_owner_before="$(owner_of_function "$SOURCE_POSTGRES_URL")"
 destination_owner_before="$(owner_of_function "$DESTINATION_POSTGRES_URL")"
-source_app_value_before="$(function_value "$SOURCE_APP_URL")"
-destination_app_value_before="$(function_value "$DESTINATION_APP_URL")"
 source_app_execute_before="$(psql "$SOURCE_POSTGRES_URL" -v ON_ERROR_STOP=1 -Atc "select has_function_privilege('cycle_app','public.pricing_guard()','EXECUTE');")"
 destination_app_execute_before="$(psql "$DESTINATION_POSTGRES_URL" -v ON_ERROR_STOP=1 -Atc "select has_function_privilege('cycle_app','public.pricing_guard()','EXECUTE');")"
+source_app_value_before="$(function_value "$SOURCE_APP_URL")"
+destination_app_value_before="$(function_value "$DESTINATION_APP_URL")"
 
 set +e
-source_replace_output="$(psql "$SOURCE_OTHER_URL" -v ON_ERROR_STOP=1 -c "create or replace function public.pricing_guard() returns text language sql as \\\$\\\$select 'tampered'::text\\\$\\\$;" 2>&1)"
+source_replace_output="$(replace_as_other "$SOURCE_OTHER_URL" 'tampered' 2>&1)"
 source_replace_exit=$?
 set -e
 set +e
-destination_replace_output="$(psql "$DESTINATION_OTHER_URL" -v ON_ERROR_STOP=1 -c "create or replace function public.pricing_guard() returns text language sql as \\\$\\\$select 'tampered'::text\\\$\\\$;" 2>&1)"
+destination_replace_output="$(replace_as_other "$DESTINATION_OTHER_URL" 'tampered' 2>&1)"
 destination_replace_exit=$?
 set -e
 destination_app_value_after_probe="$(function_value "$DESTINATION_APP_URL")"
@@ -86,19 +90,14 @@ if [[ "$source_owner_before" != 'cycle_owner' || "$destination_owner_before" != 
   exit 2
 fi
 
-# Restore destination routine semantics before production sync while preserving the ownership drift.
+# Restore destination routine semantics before production sync while preserving ownership drift.
 psql "$DESTINATION_ADMIN_URL" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
 create or replace function public.pricing_guard() returns text language sql as $$select 'safe'::text$$;
 alter function public.pricing_guard() owner to cycle_other;
 revoke all on function public.pricing_guard() from public;
 grant execute on function public.pricing_guard() to cycle_app;
 SQL
-
-restored_destination_value="$(function_value "$DESTINATION_APP_URL")"
-if [[ "$restored_destination_value" != 'safe' ]]; then
-  echo 'Destination function semantics were not restored before production sync.' >&2
-  exit 2
-fi
+[[ "$(function_value "$DESTINATION_APP_URL")" == 'safe' ]]
 
 set +e
 runtime_output="$(SOURCE_DATABASE_URL="$SOURCE_POSTGRES_URL" DESTINATION_DATABASE_URL="$DESTINATION_POSTGRES_URL" bash scripts/neon-sync/append-sync.sh 2>&1)"
@@ -106,7 +105,6 @@ sync_exit=$?
 set -e
 printf '%s\n' "$runtime_output"
 
-# Explicit fail-closed handling of function ownership incompatibility is safe.
 if [[ "$sync_exit" -ne 0 ]]; then
   printf 'NEON_FUNCTION_OWNER_DRIFT_SYNC_EXIT=%s\n' "$sync_exit"
   if grep -Eqi '(function|routine).*(owner|ownership).*(incompatib|drift|mismatch)|(owner|ownership).*(function|routine).*(incompatib|drift|mismatch)|(incompatib|drift|mismatch).*(function|routine).*(owner|ownership)' <<<"$runtime_output"; then
@@ -124,7 +122,7 @@ destination_app_value_before_final_probe="$(function_value "$DESTINATION_APP_URL
 destination_source_row_2="$(psql "$DESTINATION_POSTGRES_URL" -v ON_ERROR_STOP=1 -At -F '|' -c "select id,sku,quantity from public.products where id=2;")"
 
 set +e
-destination_after_replace_output="$(psql "$DESTINATION_OTHER_URL" -v ON_ERROR_STOP=1 -c "create or replace function public.pricing_guard() returns text language sql as \\\$\\\$select 'tampered-after-sync'::text\\\$\\\$;" 2>&1)"
+destination_after_replace_output="$(replace_as_other "$DESTINATION_OTHER_URL" 'tampered-after-sync' 2>&1)"
 destination_after_replace_exit=$?
 set -e
 destination_app_value_after_final_probe="$(function_value "$DESTINATION_APP_URL")"
@@ -139,8 +137,6 @@ printf 'destination cycle_other replace output=%s\n' "$destination_after_replace
 printf 'destination cycle_app value after final owner probe=%s\n' "$destination_app_value_after_final_probe"
 printf 'NEON_FUNCTION_OWNER_DRIFT_SYNC_EXIT=%s\n' "$sync_exit"
 
-# Safe convergence requires source ownership on destination, unchanged callable semantics,
-# the valid source append, and rejection of the same owner-only routine rewrite source rejects.
 if [[ "$destination_owner_after" == 'cycle_owner' && "$destination_app_execute_after" == 't' && "$destination_app_value_before_final_probe" == 'safe' && "$destination_after_replace_exit" -ne 0 && "$destination_app_value_after_final_probe" == 'safe' && "$destination_source_row_2" == '2|SOURCE-SKU-2|11' ]]; then
   echo 'NEON_FUNCTION_OWNER_DRIFT_DETECTED=true'
   exit 0
