@@ -298,6 +298,7 @@ sync_pair() {
   local source_columns="$workdir/source-columns.tsv"
   local destination_columns="$workdir/destination-columns.tsv"
   local missing_columns_sql="$workdir/add-missing-columns.sql"
+  local enum_owner_sql="$workdir/align-enum-owners.sql"
   local disable_triggers_sql="$workdir/disable-user-triggers.sql"
   local enable_triggers_sql="$workdir/enable-user-triggers.sql"
   local verify_source_columns="$workdir/verify-source-columns.tsv"
@@ -319,6 +320,28 @@ sync_pair() {
 
   echo "Creating any missing schema objects on destination for $label..."
   psql "$destination_url" -v ON_ERROR_STOP=0 -f "$schema_file"
+
+  psql "$source_url" -v ON_ERROR_STOP=1 -Atc "
+select distinct format(
+  'alter type %I.%I owner to %I;',
+  n.nspname,
+  t.typname,
+  pg_catalog.pg_get_userbyid(t.typowner)
+)
+from pg_catalog.pg_type t
+join pg_catalog.pg_namespace n on n.oid = t.typnamespace
+join pg_catalog.pg_attribute a on a.atttypid = t.oid and a.attnum > 0 and not a.attisdropped
+join pg_catalog.pg_class c on c.oid = a.attrelid
+where t.typtype = 'e'
+  and c.relkind in ('r', 'p')
+  and n.nspname not in ('pg_catalog', 'information_schema')
+order by 1;
+" > "$enum_owner_sql"
+
+  if [[ -s "$enum_owner_sql" ]]; then
+    echo "Aligning synchronized enum type ownership for $label..."
+    psql "$destination_url" -v ON_ERROR_STOP=1 -f "$enum_owner_sql"
+  fi
 
   local column_query="
 select
