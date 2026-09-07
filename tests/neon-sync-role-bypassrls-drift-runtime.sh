@@ -57,7 +57,7 @@ role_bypassrls() {
   psql "$1" -v ON_ERROR_STOP=1 -Atc "select rolbypassrls from pg_catalog.pg_roles where rolname='cycle_app';"
 }
 app_rows() {
-  psql "$1" -v ON_ERROR_STOP=1 -At -F '|' -c "set app.tenant_id='tenant-a'; select id,tenant_id,payload from public.tenant_records order by id;"
+  PGOPTIONS='-c app.tenant_id=tenant-a' psql "$1" -v ON_ERROR_STOP=1 -At -F '|' -c "select id,tenant_id,payload from public.tenant_records order by id;"
 }
 
 source_bypass_before="$(role_bypassrls "$SOURCE_ADMIN_URL")"
