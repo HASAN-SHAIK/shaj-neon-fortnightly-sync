@@ -52,10 +52,10 @@ printf 'BEFORE\nsource role setting=%s\ndestination role setting=%s\nsource app 
 if [[ "${source_setting,,}" != 'client_min_messages=warning' || "${destination_setting,,}" != 'client_min_messages=error' ]]; then
   echo 'Fixture did not establish client_min_messages drift.' >&2; exit 2
 fi
-if [[ "$source_probe" != 0\|warning* || "$source_probe" != *'WARNING:  CYCLE-D-APP-WARNING'* || "$source_probe" != *'1|SOURCE-SKU-1|7'* ]]; then
+if [[ "$source_probe" != 0\|* || "$source_probe" != *'WARNING:  CYCLE-D-APP-WARNING'* || "$source_probe" != *'warning'* || "$source_probe" != *'1|SOURCE-SKU-1|7'* ]]; then
   echo 'Source application probe did not expose the expected warning.' >&2; exit 2
 fi
-if [[ "$destination_probe" != 0\|error* || "$destination_probe" == *'CYCLE-D-APP-WARNING'* || "$destination_probe" != *'1|SOURCE-SKU-1|7'* ]]; then
+if [[ "$destination_probe" != 0\|* || "$destination_probe" != *'error'* || "$destination_probe" == *'CYCLE-D-APP-WARNING'* || "$destination_probe" != *'1|SOURCE-SKU-1|7'* ]]; then
   echo 'Destination application probe did not establish warning suppression.' >&2; exit 2
 fi
 
