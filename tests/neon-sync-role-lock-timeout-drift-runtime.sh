@@ -52,6 +52,7 @@ probe_update() {
   output="$(timeout 1.5s psql "$url" -v ON_ERROR_STOP=1 -At -c "update public.products set quantity=quantity+1 where id=1 returning id,sku,quantity;" 2>&1)"
   local code=$?
   set -e
+  output="${output//$'\n'/\\n}"
   printf '%s|%s\n' "$code" "$output"
 }
 
