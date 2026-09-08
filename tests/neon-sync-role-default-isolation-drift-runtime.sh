@@ -44,9 +44,9 @@ probe_isolation() {
   psql "$app_url" -v ON_ERROR_STOP=1 -At >"$out_file" 2>&1 <<'SQL' &
 begin;
 show transaction_isolation;
-select count(*) from public.products where id < 900;
+select count(*) from public.products where id < 1000;
 select pg_sleep(0.6);
-select count(*) from public.products where id < 900;
+select count(*) from public.products where id < 1000;
 commit;
 SQL
   local app_pid=$!
@@ -74,7 +74,7 @@ printf 'BEFORE\nsource role setting=%s\ndestination role setting=%s\nsource isol
 if [[ "$source_setting" != 'default_transaction_isolation=serializable' || "$destination_setting" != 'default_transaction_isolation=read committed' ]]; then
   echo 'Fixture did not establish default transaction isolation drift.' >&2; exit 2
 fi
-if [[ "$source_probe" != 0\|*serializable* || "$source_probe" != *'1\\n\\n1'* ]]; then
+if [[ "$source_probe" != 0\|*serializable* || "$source_probe" != *'2\\n\\n2'* ]]; then
   echo 'Source serializable transaction did not preserve its initial snapshot across the concurrent insert.' >&2; exit 2
 fi
 if [[ "$destination_probe" != 0\|*'read committed'* || "$destination_probe" != *'1\\n\\n2'* ]]; then
