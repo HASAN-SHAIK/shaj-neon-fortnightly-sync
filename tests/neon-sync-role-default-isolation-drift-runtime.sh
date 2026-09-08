@@ -74,10 +74,10 @@ printf 'BEFORE\nsource role setting=%s\ndestination role setting=%s\nsource isol
 if [[ "$source_setting" != 'default_transaction_isolation=serializable' || "$destination_setting" != 'default_transaction_isolation=read committed' ]]; then
   echo 'Fixture did not establish default transaction isolation drift.' >&2; exit 2
 fi
-if [[ "$source_probe" != 0\|*serializable* || "$source_probe" != *'2\\n\\n2'* ]]; then
+if [[ "$source_probe" != 0\|*serializable* || "$source_probe" != *'2\n\n2'* ]]; then
   echo 'Source serializable transaction did not preserve its initial snapshot across the concurrent insert.' >&2; exit 2
 fi
-if [[ "$destination_probe" != 0\|*'read committed'* || "$destination_probe" != *'1\\n\\n2'* ]]; then
+if [[ "$destination_probe" != 0\|*'read committed'* || "$destination_probe" != *'1\n\n2'* ]]; then
   echo 'Destination read-committed transaction did not observe the concurrent insert on its second statement.' >&2; exit 2
 fi
 
@@ -99,7 +99,7 @@ source_probe_after="$(probe_isolation "$SOURCE_APP_URL" "$SOURCE_ADMIN_URL" 902)
 destination_probe_after="$(probe_isolation "$DESTINATION_APP_URL" "$DESTINATION_ADMIN_URL" 902)"
 printf 'AFTER\ndestination role setting=%s\nappended source row=%s\nsource isolation probe=%s\ndestination isolation probe=%s\nNEON_ROLE_DEFAULT_ISOLATION_DRIFT_SYNC_EXIT=%s\n' "$destination_setting_after" "$destination_row_2" "$source_probe_after" "$destination_probe_after" "$sync_exit"
 
-if [[ "$destination_setting_after" == 'default_transaction_isolation=serializable' && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$destination_probe_after" == 0\|*serializable* && "$destination_probe_after" == *'2\\n\\n2'* ]]; then
+if [[ "$destination_setting_after" == 'default_transaction_isolation=serializable' && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$destination_probe_after" == 0\|*serializable* && "$destination_probe_after" == *'2\n\n2'* ]]; then
   echo 'NEON_ROLE_DEFAULT_ISOLATION_DRIFT_DETECTED=true'; exit 0
 fi
 echo 'NEON_ROLE_DEFAULT_ISOLATION_DRIFT_DETECTED=false'
