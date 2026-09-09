@@ -59,7 +59,7 @@ source_setting="$(role_setting "$SOURCE_ADMIN_URL")"; destination_setting="$(rol
 source_probe="$(probe_plan "$SOURCE_APP_URL")"; destination_probe="$(probe_plan "$DESTINATION_APP_URL")"
 printf 'BEFORE\nsource role setting=%s\ndestination role setting=%s\nsource app memoize probe=%s\ndestination app memoize probe=%s\n' "$source_setting" "$destination_setting" "$source_probe" "$destination_probe"
 [[ "${source_setting,,}" == 'enable_memoize=on' && "${destination_setting,,}" == 'enable_memoize=off' ]] || { echo 'Fixture did not establish enable_memoize drift.' >&2; exit 2; }
-[[ "$source_probe" == on\|*"Memoize"*"Nested Loop"*"|count=20000|15000|SOURCE-SKU-15000|0" ]] || { echo "Source did not use expected Memoize nested-loop plan: $source_probe" >&2; exit 2; }
+[[ "$source_probe" == on\|*"Nested Loop"*"Memoize"*"|count=20000|15000|SOURCE-SKU-15000|0" ]] || { echo "Source did not use expected Memoize nested-loop plan: $source_probe" >&2; exit 2; }
 [[ "$destination_probe" == off\|*"Nested Loop"*"|count=20000|15000|SOURCE-SKU-15000|0" && "$destination_probe" != *"Memoize"* ]] || { echo "Destination did not use expected non-Memoize nested-loop plan: $destination_probe" >&2; exit 2; }
 
 set +e
@@ -76,10 +76,10 @@ destination_setting_after="$(role_setting "$DESTINATION_ADMIN_URL")"
 destination_row="$(psql "$DESTINATION_ADMIN_URL" -v ON_ERROR_STOP=1 -At -F '|' -c 'select id,sku,quantity from public.products where id=20001;')"
 source_probe_after="$(probe_plan "$SOURCE_APP_URL")"; destination_probe_after="$(probe_plan "$DESTINATION_APP_URL")"
 printf 'AFTER\ndestination role setting=%s\nappended source row=%s\nsource app memoize probe=%s\ndestination app memoize probe=%s\nNEON_ROLE_ENABLE_MEMOIZE_DRIFT_SYNC_EXIT=%s\n' "$destination_setting_after" "$destination_row" "$source_probe_after" "$destination_probe_after" "$sync_exit"
-if [[ "$source_probe_after" != on\|*"Memoize"*"Nested Loop"*"|count=20000|15000|SOURCE-SKU-15000|0" || "$destination_probe_after" != off\|*"Nested Loop"*"|count=20000|15000|SOURCE-SKU-15000|0" || "$destination_probe_after" == *"Memoize"* ]]; then
+if [[ "$source_probe_after" != on\|*"Nested Loop"*"Memoize"*"|count=20000|15000|SOURCE-SKU-15000|0" || "$destination_probe_after" != off\|*"Nested Loop"*"|count=20000|15000|SOURCE-SKU-15000|0" || "$destination_probe_after" == *"Memoize"* ]]; then
   echo 'Post-sync fixture/data no longer isolates the intended enable_memoize planner boundary.' >&2
   exit 2
 fi
-if [[ "${destination_setting_after,,}" == 'enable_memoize=on' && "$destination_row" == '20001|SOURCE-SKU-20001|11' && "$destination_probe_after" == on\|*"Memoize"* ]]; then echo 'NEON_ROLE_ENABLE_MEMOIZE_DRIFT_DETECTED=true'; exit 0; fi
+if [[ "${destination_setting_after,,}" == 'enable_memoize=on' && "$destination_row" == '20001|SOURCE-SKU-20001|11' && "$destination_probe_after" == on\|*"Nested Loop"*"Memoize"* ]]; then echo 'NEON_ROLE_ENABLE_MEMOIZE_DRIFT_DETECTED=true'; exit 0; fi
 echo 'NEON_ROLE_ENABLE_MEMOIZE_DRIFT_DETECTED=false'
 exit 1
