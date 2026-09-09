@@ -12,6 +12,9 @@ psql "$SOURCE_ROOT_URL" -v ON_ERROR_STOP=1 <<'SQL'
 create role cycle_app login;
 alter role cycle_app set enable_hashjoin = on;
 alter role cycle_app set enable_nestloop = off;
+alter role cycle_app set enable_indexscan = off;
+alter role cycle_app set enable_indexonlyscan = off;
+alter role cycle_app set enable_bitmapscan = off;
 alter role cycle_app set max_parallel_workers_per_gather = 0;
 create database cycle_d_source;
 SQL
@@ -19,6 +22,9 @@ psql "$DESTINATION_ROOT_URL" -v ON_ERROR_STOP=1 <<'SQL'
 create role cycle_app login;
 alter role cycle_app set enable_hashjoin = off;
 alter role cycle_app set enable_nestloop = off;
+alter role cycle_app set enable_indexscan = off;
+alter role cycle_app set enable_indexonlyscan = off;
+alter role cycle_app set enable_bitmapscan = off;
 alter role cycle_app set max_parallel_workers_per_gather = 0;
 create database cycle_d_destination;
 SQL
@@ -26,8 +32,8 @@ SQL
 for admin_url in "$SOURCE_ADMIN_URL" "$DESTINATION_ADMIN_URL"; do
   psql "$admin_url" -v ON_ERROR_STOP=1 <<'SQL'
 create table public.products (id bigint primary key, sku text not null, quantity integer not null);
-create table public.join_left (id integer not null, payload text not null);
-create table public.join_right (id integer not null, payload text not null);
+create table public.join_left (id integer primary key, payload text not null);
+create table public.join_right (id integer primary key, payload text not null);
 grant usage on schema public to cycle_app;
 grant select on public.products, public.join_left, public.join_right to cycle_app;
 insert into public.products select g, 'SOURCE-SKU-' || lpad(g::text,5,'0'), g % 100 from generate_series(1,20000) g;
@@ -71,6 +77,10 @@ destination_setting_after="$(role_setting "$DESTINATION_ADMIN_URL")"
 destination_row="$(psql "$DESTINATION_ADMIN_URL" -v ON_ERROR_STOP=1 -At -F '|' -c 'select id,sku,quantity from public.products where id=20001;')"
 source_probe_after="$(probe_plan "$SOURCE_APP_URL")"; destination_probe_after="$(probe_plan "$DESTINATION_APP_URL")"
 printf 'AFTER\ndestination role setting=%s\nappended source row=%s\nsource app join probe=%s\ndestination app join probe=%s\nNEON_ROLE_ENABLE_HASHJOIN_DRIFT_SYNC_EXIT=%s\n' "$destination_setting_after" "$destination_row" "$source_probe_after" "$destination_probe_after" "$sync_exit"
+if [[ "$source_probe_after" != on\|*"Hash Join"*"|count=20000|15000|SOURCE-SKU-15000|0" || "$destination_probe_after" != off\|*"Merge Join"*"Sort"*"|count=20000|15000|SOURCE-SKU-15000|0" || "$destination_probe_after" == *"Hash Join"* ]]; then
+  echo 'Post-sync fixture/data no longer isolates the intended enable_hashjoin planner boundary.' >&2
+  exit 2
+fi
 if [[ "${destination_setting_after,,}" == 'enable_hashjoin=on' && "$destination_row" == '20001|SOURCE-SKU-20001|11' && "$destination_probe_after" == on\|*"Hash Join"* ]]; then echo 'NEON_ROLE_ENABLE_HASHJOIN_DRIFT_DETECTED=true'; exit 0; fi
 echo 'NEON_ROLE_ENABLE_HASHJOIN_DRIFT_DETECTED=false'
 exit 1
