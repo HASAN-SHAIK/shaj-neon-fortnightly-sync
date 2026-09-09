@@ -11,15 +11,11 @@ DST_APP='postgresql://cycle_app@127.0.0.1:55433/cycle_d_destination'
 psql "$SRC_ROOT" -v ON_ERROR_STOP=1 <<'SQL'
 create role cycle_app login;
 alter role cycle_app set plan_cache_mode = 'force_custom_plan';
-alter role cycle_app set enable_bitmapscan = off;
-alter role cycle_app set max_parallel_workers_per_gather = 0;
 create database cycle_d_source;
 SQL
 psql "$DST_ROOT" -v ON_ERROR_STOP=1 <<'SQL'
 create role cycle_app login;
 alter role cycle_app set plan_cache_mode = 'force_generic_plan';
-alter role cycle_app set enable_bitmapscan = off;
-alter role cycle_app set max_parallel_workers_per_gather = 0;
 create database cycle_d_destination;
 SQL
 
@@ -31,7 +27,6 @@ create table public.plan_cache_probe (
   category text not null,
   payload text not null
 );
-create index plan_cache_probe_rare_idx on public.plan_cache_probe(category) where category='rare';
 grant usage on schema public to cycle_app;
 grant select on public.products, public.plan_cache_probe to cycle_app;
 insert into public.products
@@ -57,10 +52,32 @@ probe() {
 show plan_cache_mode;
 prepare cycle_plan(text) as
   select sum(length(payload)) from public.plan_cache_probe where category=$1;
-explain (costs off) execute cycle_plan('rare');
 execute cycle_plan('rare');
+execute cycle_plan('hot');
+select 'prepared_counts', generic_plans, custom_plans from pg_prepared_statements where name='cycle_plan';
 select id,sku,quantity from public.products where id=15000;
 SQL
+}
+
+assert_common_probe() {
+  local value="$1"
+  grep -Fxq '25600' <<<"$value" || return 1
+  grep -Fxq '51174400' <<<"$value" || return 1
+  grep -Fxq '15000|SOURCE-SKU-15000|0' <<<"$value" || return 1
+}
+
+assert_source_probe() {
+  local value="$1"
+  grep -Fxq 'force_custom_plan' <<<"$value" || return 1
+  grep -Fxq 'prepared_counts|0|2' <<<"$value" || return 1
+  assert_common_probe "$value"
+}
+
+assert_destination_probe() {
+  local value="$1"
+  grep -Fxq 'force_generic_plan' <<<"$value" || return 1
+  grep -Fxq 'prepared_counts|2|0' <<<"$value" || return 1
+  assert_common_probe "$value"
 }
 
 src_setting="$(role_setting "$SRC_ADMIN")"
@@ -70,8 +87,8 @@ dst_probe="$(probe "$DST_APP")"
 printf 'BEFORE\nsource role setting=%s\ndestination role setting=%s\nsource app plan-cache probe=%s\ndestination app plan-cache probe=%s\n' "$src_setting" "$dst_setting" "$src_probe" "$dst_probe"
 
 [[ "${src_setting,,}" == 'plan_cache_mode=force_custom_plan' && "${dst_setting,,}" == 'plan_cache_mode=force_generic_plan' ]] || { echo 'Fixture did not establish plan_cache_mode drift.' >&2; exit 2; }
-[[ "$src_probe" == force_custom_plan$'\n'*"Index Scan using plan_cache_probe_rare_idx"*"category = 'rare'::text"*$'\n25600\n15000|SOURCE-SKU-15000|0' ]] || { echo "Source did not choose the expected selective custom plan: $src_probe" >&2; exit 2; }
-[[ "$dst_probe" == force_generic_plan$'\n'*"Seq Scan on plan_cache_probe"*'category = $1'*$'\n25600\n15000|SOURCE-SKU-15000|0' ]] || { echo "Destination did not choose the expected generic plan: $dst_probe" >&2; exit 2; }
+assert_source_probe "$src_probe" || { echo "Source did not execute two custom prepared plans with correct results: $src_probe" >&2; exit 2; }
+assert_destination_probe "$dst_probe" || { echo "Destination did not execute two generic prepared plans with correct results: $dst_probe" >&2; exit 2; }
 
 set +e
 out="$(SOURCE_DATABASE_URL="$SRC_ADMIN" DESTINATION_DATABASE_URL="$DST_ADMIN" EXCLUDED_TABLES='public.plan_cache_probe' bash scripts/neon-sync/append-sync.sh 2>&1)"
@@ -96,7 +113,7 @@ printf 'AFTER\ndestination role setting=%s\nappended source row=%s\nsource app p
 
 [[ "${dst_setting_after,,}" == 'plan_cache_mode=force_generic_plan' ]] || { echo 'Destination setting changed unexpectedly.' >&2; exit 2; }
 [[ "$dst_row" == '20001|SOURCE-SKU-20001|11' ]] || { echo 'Legitimate application row did not synchronize.' >&2; exit 2; }
-[[ "$src_after" == force_custom_plan$'\n'*"Index Scan using plan_cache_probe_rare_idx"*"category = 'rare'::text"*$'\n25600\n15000|SOURCE-SKU-15000|0' ]] || { echo 'Source custom-plan behavior did not persist.' >&2; exit 2; }
-[[ "$dst_after" == force_generic_plan$'\n'*"Seq Scan on plan_cache_probe"*'category = $1'*$'\n25600\n15000|SOURCE-SKU-15000|0' ]] || { echo 'Destination generic-plan behavior did not persist.' >&2; exit 2; }
+assert_source_probe "$src_after" || { echo 'Source custom-plan behavior did not persist.' >&2; exit 2; }
+assert_destination_probe "$dst_after" || { echo 'Destination generic-plan behavior did not persist.' >&2; exit 2; }
 echo 'NEON_ROLE_PLAN_CACHE_MODE_DRIFT_DETECTED=false'
 exit 1
