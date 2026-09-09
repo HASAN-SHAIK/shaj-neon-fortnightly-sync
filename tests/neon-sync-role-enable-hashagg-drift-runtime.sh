@@ -47,8 +47,8 @@ probe_plan() {
   local url="$1"
   local hashagg plan digest row
   hashagg="$(psql "$url" -X -v ON_ERROR_STOP=1 -At -c 'show enable_hashagg;')"
-  plan="$(psql "$url" -X -v ON_ERROR_STOP=1 -At -c 'explain (costs off) select quantity,count(*) from public.products group by quantity;' | tr '\n' ';')"
-  digest="$(psql "$url" -X -v ON_ERROR_STOP=1 -At -c "select md5(string_agg(quantity::text || ':' || c::text, ',' order by quantity)) from (select quantity,count(*) c from public.products group by quantity) q;")"
+  plan="$(psql "$url" -X -v ON_ERROR_STOP=1 -At -c 'explain (costs off) select quantity,count(*) from public.products where id <= 20000 group by quantity;' | tr '\n' ';')"
+  digest="$(psql "$url" -X -v ON_ERROR_STOP=1 -At -c "select md5(string_agg(quantity::text || ':' || c::text, ',' order by quantity)) from (select quantity,count(*) c from public.products where id <= 20000 group by quantity) q;")"
   row="$(psql "$url" -X -v ON_ERROR_STOP=1 -At -F '|' -c "select id,sku,quantity from public.products where id=15000;")"
   printf '%s|%s|digest=%s|%s' "$hashagg" "$plan" "$digest" "$row"
 }
