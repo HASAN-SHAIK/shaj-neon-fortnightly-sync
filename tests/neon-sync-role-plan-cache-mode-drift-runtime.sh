@@ -60,7 +60,6 @@ prepare cycle_plan(text) as
 explain (costs off) execute cycle_plan('rare');
 execute cycle_plan('rare');
 select id,sku,quantity from public.products where id=15000;
-deallocate cycle_plan;
 SQL
 }
 
