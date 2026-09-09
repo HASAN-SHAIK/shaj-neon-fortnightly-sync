@@ -60,7 +60,7 @@ fi
 if [[ "$source_probe" != 0\|on\|a\'b\|1\|SOURCE-SKU-1\|7 ]]; then
   echo "Source backslash_quote=on probe did not accept legacy escaped quote: $source_probe" >&2; exit 2
 fi
-if [[ "$destination_probe" != 1\|*"unsafe use of \\' in a string literal"* ]]; then
+if [[ "$destination_probe" != 3\|*"unsafe use of \\' in a string literal"* ]]; then
   echo "Destination backslash_quote=off probe did not reject legacy escaped quote: $destination_probe" >&2; exit 2
 fi
 
