@@ -46,8 +46,8 @@ role_setting() {
 probe_plan() {
   local url="$1" nestloop plan result row
   nestloop="$(psql "$url" -X -v ON_ERROR_STOP=1 -At -c 'show enable_nestloop;')"
-  plan="$(psql "$url" -X -v ON_ERROR_STOP=1 -At -c 'explain (costs off) select count(*) from public.join_left l join public.join_right r on r.id=l.id where l.id = 1;' | tr '\n' ';')"
-  result="$(psql "$url" -X -v ON_ERROR_STOP=1 -At -c 'select count(*) from public.join_left l join public.join_right r on r.id=l.id where l.id = 1;')"
+  plan="$(psql "$url" -X -v ON_ERROR_STOP=1 -At -c 'explain (costs off) select count(*) from public.join_left l join public.join_right r on r.id=l.id where l.id <= 10;' | tr '\n' ';')"
+  result="$(psql "$url" -X -v ON_ERROR_STOP=1 -At -c 'select count(*) from public.join_left l join public.join_right r on r.id=l.id where l.id <= 10;')"
   row="$(psql "$url" -X -v ON_ERROR_STOP=1 -At -F '|' -c 'select id,sku,quantity from public.products where id=15000;')"
   printf '%s|%s|count=%s|%s' "$nestloop" "$plan" "$result" "$row"
 }
@@ -56,8 +56,8 @@ source_setting="$(role_setting "$SOURCE_ADMIN_URL")"; destination_setting="$(rol
 source_probe="$(probe_plan "$SOURCE_APP_URL")"; destination_probe="$(probe_plan "$DESTINATION_APP_URL")"
 printf 'BEFORE\nsource role setting=%s\ndestination role setting=%s\nsource app join probe=%s\ndestination app join probe=%s\n' "$source_setting" "$destination_setting" "$source_probe" "$destination_probe"
 [[ "${source_setting,,}" == 'enable_nestloop=on' && "${destination_setting,,}" == 'enable_nestloop=off' ]] || { echo 'Fixture did not establish enable_nestloop drift.' >&2; exit 2; }
-[[ "$source_probe" == on\|*"Nested Loop"*"|count=1|15000|SOURCE-SKU-15000|0" ]] || { echo "Source did not use expected Nested Loop: $source_probe" >&2; exit 2; }
-[[ "$destination_probe" == off\|*"Hash Join"*"|count=1|15000|SOURCE-SKU-15000|0" && "$destination_probe" != *"Nested Loop"* ]] || { echo "Destination did not use expected Hash Join fallback: $destination_probe" >&2; exit 2; }
+[[ "$source_probe" == on\|*"Nested Loop"*"|count=10|15000|SOURCE-SKU-15000|0" ]] || { echo "Source did not use expected Nested Loop: $source_probe" >&2; exit 2; }
+[[ "$destination_probe" == off\|*"Hash Join"*"|count=10|15000|SOURCE-SKU-15000|0" && "$destination_probe" != *"Nested Loop"* ]] || { echo "Destination did not use expected Hash Join fallback: $destination_probe" >&2; exit 2; }
 
 set +e
 runtime_output="$(SOURCE_DATABASE_URL="$SOURCE_ADMIN_URL" DESTINATION_DATABASE_URL="$DESTINATION_ADMIN_URL" bash scripts/neon-sync/append-sync.sh 2>&1)"; sync_exit=$?
@@ -73,7 +73,7 @@ destination_setting_after="$(role_setting "$DESTINATION_ADMIN_URL")"
 destination_row="$(psql "$DESTINATION_ADMIN_URL" -v ON_ERROR_STOP=1 -At -F '|' -c 'select id,sku,quantity from public.products where id=20001;')"
 source_probe_after="$(probe_plan "$SOURCE_APP_URL")"; destination_probe_after="$(probe_plan "$DESTINATION_APP_URL")"
 printf 'AFTER\ndestination role setting=%s\nappended source row=%s\nsource app join probe=%s\ndestination app join probe=%s\nNEON_ROLE_ENABLE_NESTLOOP_DRIFT_SYNC_EXIT=%s\n' "$destination_setting_after" "$destination_row" "$source_probe_after" "$destination_probe_after" "$sync_exit"
-if [[ "$source_probe_after" != on\|*"Nested Loop"*"|count=1|15000|SOURCE-SKU-15000|0" || "$destination_probe_after" != off\|*"Hash Join"*"|count=1|15000|SOURCE-SKU-15000|0" || "$destination_probe_after" == *"Nested Loop"* ]]; then
+if [[ "$source_probe_after" != on\|*"Nested Loop"*"|count=10|15000|SOURCE-SKU-15000|0" || "$destination_probe_after" != off\|*"Hash Join"*"|count=10|15000|SOURCE-SKU-15000|0" || "$destination_probe_after" == *"Nested Loop"* ]]; then
   echo 'Post-sync fixture/data no longer isolates the intended enable_nestloop planner boundary.' >&2
   exit 2
 fi
