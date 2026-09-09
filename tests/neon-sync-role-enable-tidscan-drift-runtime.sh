@@ -46,8 +46,8 @@ probe_plan() {
   local tidscan tid plan row
   tidscan="$(psql "$url" -X -v ON_ERROR_STOP=1 -At -c 'show enable_tidscan;')"
   tid="$(psql "$url" -X -v ON_ERROR_STOP=1 -At -c "select ctid::text from public.products where id=15000;")"
-  plan="$(psql "$url" -X -v ON_ERROR_STOP=1 -At -v tid="$tid" -c "explain (costs off) select id,sku,quantity from public.products where ctid=:'tid'::tid;" | tr '\n' ';')"
-  row="$(psql "$url" -X -v ON_ERROR_STOP=1 -At -F '|' -v tid="$tid" -c "select id,sku,quantity from public.products where ctid=:'tid'::tid;")"
+  plan="$(psql "$url" -X -v ON_ERROR_STOP=1 -At -c "explain (costs off) select id,sku,quantity from public.products where ctid='$tid'::tid;" | tr '\n' ';')"
+  row="$(psql "$url" -X -v ON_ERROR_STOP=1 -At -F '|' -c "select id,sku,quantity from public.products where ctid='$tid'::tid;")"
   printf '%s|tid=%s|%s|%s' "$tidscan" "$tid" "$plan" "$row"
 }
 
