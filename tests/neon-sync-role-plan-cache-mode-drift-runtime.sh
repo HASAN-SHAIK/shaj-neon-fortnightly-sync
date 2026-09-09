@@ -31,7 +31,7 @@ create table public.plan_cache_probe (
   category text not null,
   payload text not null
 );
-create index plan_cache_probe_category_idx on public.plan_cache_probe(category);
+create index plan_cache_probe_rare_idx on public.plan_cache_probe(category) where category='rare';
 grant usage on schema public to cycle_app;
 grant select on public.products, public.plan_cache_probe to cycle_app;
 insert into public.products
@@ -70,7 +70,7 @@ dst_probe="$(probe "$DST_APP")"
 printf 'BEFORE\nsource role setting=%s\ndestination role setting=%s\nsource app plan-cache probe=%s\ndestination app plan-cache probe=%s\n' "$src_setting" "$dst_setting" "$src_probe" "$dst_probe"
 
 [[ "${src_setting,,}" == 'plan_cache_mode=force_custom_plan' && "${dst_setting,,}" == 'plan_cache_mode=force_generic_plan' ]] || { echo 'Fixture did not establish plan_cache_mode drift.' >&2; exit 2; }
-[[ "$src_probe" == force_custom_plan$'\n'*"Index Scan using plan_cache_probe_category_idx"*"category = 'rare'::text"*$'\n25600\n15000|SOURCE-SKU-15000|0' ]] || { echo "Source did not choose the expected selective custom plan: $src_probe" >&2; exit 2; }
+[[ "$src_probe" == force_custom_plan$'\n'*"Index Scan using plan_cache_probe_rare_idx"*"category = 'rare'::text"*$'\n25600\n15000|SOURCE-SKU-15000|0' ]] || { echo "Source did not choose the expected selective custom plan: $src_probe" >&2; exit 2; }
 [[ "$dst_probe" == force_generic_plan$'\n'*"Seq Scan on plan_cache_probe"*'category = $1'*$'\n25600\n15000|SOURCE-SKU-15000|0' ]] || { echo "Destination did not choose the expected generic plan: $dst_probe" >&2; exit 2; }
 
 set +e
@@ -96,7 +96,7 @@ printf 'AFTER\ndestination role setting=%s\nappended source row=%s\nsource app p
 
 [[ "${dst_setting_after,,}" == 'plan_cache_mode=force_generic_plan' ]] || { echo 'Destination setting changed unexpectedly.' >&2; exit 2; }
 [[ "$dst_row" == '20001|SOURCE-SKU-20001|11' ]] || { echo 'Legitimate application row did not synchronize.' >&2; exit 2; }
-[[ "$src_after" == force_custom_plan$'\n'*"Index Scan using plan_cache_probe_category_idx"*"category = 'rare'::text"*$'\n25600\n15000|SOURCE-SKU-15000|0' ]] || { echo 'Source custom-plan behavior did not persist.' >&2; exit 2; }
+[[ "$src_after" == force_custom_plan$'\n'*"Index Scan using plan_cache_probe_rare_idx"*"category = 'rare'::text"*$'\n25600\n15000|SOURCE-SKU-15000|0' ]] || { echo 'Source custom-plan behavior did not persist.' >&2; exit 2; }
 [[ "$dst_after" == force_generic_plan$'\n'*"Seq Scan on plan_cache_probe"*'category = $1'*$'\n25600\n15000|SOURCE-SKU-15000|0' ]] || { echo 'Destination generic-plan behavior did not persist.' >&2; exit 2; }
 echo 'NEON_ROLE_PLAN_CACHE_MODE_DRIFT_DETECTED=false'
 exit 1
