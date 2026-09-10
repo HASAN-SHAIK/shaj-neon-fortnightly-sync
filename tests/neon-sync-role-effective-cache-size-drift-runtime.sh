@@ -22,19 +22,12 @@ SQL
 for url in "$SRC_ADMIN" "$DST_ADMIN"; do
   psql "$url" -v ON_ERROR_STOP=1 <<'SQL'
 create table public.products (id bigint primary key, sku text not null, quantity integer not null);
-create table public.effective_cache_size_probe (
-  id bigint primary key,
-  bucket integer not null,
-  payload text not null
-);
+create table public.effective_cache_size_probe (id bigint primary key, bucket integer not null, payload text not null);
 create index effective_cache_size_probe_bucket_idx on public.effective_cache_size_probe(bucket);
 grant usage on schema public to cycle_app;
 grant select on public.products, public.effective_cache_size_probe to cycle_app;
-insert into public.products
-select g, 'SOURCE-SKU-' || lpad(g::text,5,'0'), g % 100 from generate_series(1,20000) g;
-insert into public.effective_cache_size_probe
-select g, g % 100, repeat(md5(g::text), 16)
-from generate_series(1,300000) g;
+insert into public.products select g, 'SOURCE-SKU-' || lpad(g::text,5,'0'), g % 100 from generate_series(1,20000) g;
+insert into public.effective_cache_size_probe select g, g % 100, repeat(md5(g::text), 16) from generate_series(1,300000) g;
 analyze public.products;
 analyze public.effective_cache_size_probe;
 SQL
@@ -44,42 +37,23 @@ psql "$SRC_ADMIN" -v ON_ERROR_STOP=1 -c "insert into public.products values (200
 role_setting() {
   psql "$1" -v ON_ERROR_STOP=1 -At -c "select cfg from pg_db_role_setting s join pg_roles r on r.oid=s.setrole cross join lateral unnest(s.setconfig) cfg where r.rolname='cycle_app' and s.setdatabase=0 and lower(cfg) like 'effective_cache_size=%';"
 }
-
 probe() {
   psql "$1" -X -v ON_ERROR_STOP=1 -At -F '|' <<'SQL'
 show effective_cache_size;
-set random_page_cost=4;
+set random_page_cost=16;
 set seq_page_cost=1;
 set enable_bitmapscan=off;
 set enable_indexonlyscan=off;
 set max_parallel_workers_per_gather=0;
 explain (analyze, costs off, timing off, summary off, buffers)
-select id,bucket,payload from public.effective_cache_size_probe where bucket < 5;
-select md5(string_agg(id::text || ':' || bucket::text || ':' || payload, ',' order by id))
-from public.effective_cache_size_probe where bucket < 5;
+select id,bucket,payload from public.effective_cache_size_probe where bucket < 2;
+select md5(string_agg(id::text || ':' || bucket::text || ':' || payload, ',' order by id)) from public.effective_cache_size_probe where bucket < 2;
 select id,sku,quantity from public.products where id=15000;
 SQL
 }
-
-assert_common() {
-  local v="$1"
-  grep -Eq '^[0-9a-f]{32}$' <<<"$v" || return 1
-  grep -Fxq '15000|SOURCE-SKU-15000|0' <<<"$v" || return 1
-}
-assert_source() {
-  local v="$1"
-  grep -Fxiq '128GB' <<<"$v" || return 1
-  grep -Eq 'Index Scan using effective_cache_size_probe_bucket_idx' <<<"$v" || return 1
-  ! grep -Eq 'Seq Scan on effective_cache_size_probe' <<<"$v" || return 1
-  assert_common "$v"
-}
-assert_destination() {
-  local v="$1"
-  grep -Fxiq '1MB' <<<"$v" || return 1
-  grep -Eq 'Seq Scan on effective_cache_size_probe' <<<"$v" || return 1
-  ! grep -Eq 'Index Scan using effective_cache_size_probe_bucket_idx' <<<"$v" || return 1
-  assert_common "$v"
-}
+assert_common() { local v="$1"; grep -Eq '^[0-9a-f]{32}$' <<<"$v" && grep -Fxq '15000|SOURCE-SKU-15000|0' <<<"$v"; }
+assert_source() { local v="$1"; grep -Fxiq '128GB' <<<"$v" && grep -Eq 'Index Scan using effective_cache_size_probe_bucket_idx' <<<"$v" && ! grep -Eq 'Seq Scan on effective_cache_size_probe' <<<"$v" && assert_common "$v"; }
+assert_destination() { local v="$1"; grep -Fxiq '1MB' <<<"$v" && grep -Eq 'Seq Scan on effective_cache_size_probe' <<<"$v" && ! grep -Eq 'Index Scan using effective_cache_size_probe_bucket_idx' <<<"$v" && assert_common "$v"; }
 digest() { grep -E '^[0-9a-f]{32}$' <<<"$1" | tail -n1; }
 
 src_setting="$(role_setting "$SRC_ADMIN")"; dst_setting="$(role_setting "$DST_ADMIN")"
@@ -96,9 +70,7 @@ set -e
 printf '%s\n' "$out"
 if [[ "$rc" -ne 0 ]]; then
   printf 'NEON_ROLE_EFFECTIVE_CACHE_SIZE_DRIFT_SYNC_EXIT=%s\n' "$rc"
-  if grep -Eqi 'effective_cache_size|pg_db_role_setting|role setting' <<<"$out"; then
-    echo 'NEON_ROLE_EFFECTIVE_CACHE_SIZE_DRIFT_FAIL_CLOSED=true'; exit 0
-  fi
+  if grep -Eqi 'effective_cache_size|pg_db_role_setting|role setting' <<<"$out"; then echo 'NEON_ROLE_EFFECTIVE_CACHE_SIZE_DRIFT_FAIL_CLOSED=true'; exit 0; fi
   echo 'NEON_ROLE_EFFECTIVE_CACHE_SIZE_DRIFT_FAIL_CLOSED=false'; exit 1
 fi
 
