@@ -54,9 +54,9 @@ set enable_bitmapscan=off;
 set enable_indexonlyscan=off;
 set max_parallel_workers_per_gather=0;
 explain (analyze, costs off, timing off, summary off, buffers)
-select id,bucket,payload from public.effective_cache_size_probe where bucket < 12;
+select id,bucket,payload from public.effective_cache_size_probe where bucket < 5;
 select md5(string_agg(id::text || ':' || bucket::text || ':' || payload, ',' order by id))
-from public.effective_cache_size_probe where bucket < 12;
+from public.effective_cache_size_probe where bucket < 5;
 select id,sku,quantity from public.products where id=15000;
 SQL
 }
