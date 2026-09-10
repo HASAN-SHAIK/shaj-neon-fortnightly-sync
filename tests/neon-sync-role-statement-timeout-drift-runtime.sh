@@ -31,48 +31,40 @@ SQL
 done
 psql "$SRC_ADMIN" -v ON_ERROR_STOP=1 -c "insert into public.products values (20001,'SOURCE-SKU-20001',11); analyze public.products;"
 
-role_setting() {
+catalog_setting() {
   psql "$1" -v ON_ERROR_STOP=1 -At -c "select cfg from pg_db_role_setting s join pg_roles r on r.oid=s.setrole cross join lateral unnest(s.setconfig) cfg where r.rolname='cycle_app' and s.setdatabase=0 and lower(cfg) like 'statement_timeout=%';"
 }
-
-probe() {
-  local url="$1"
-  local tmp
+effective_setting() { psql "$1" -X -v ON_ERROR_STOP=1 -At -c 'show statement_timeout;'; }
+ordinary_row() { psql "$1" -X -v ON_ERROR_STOP=1 -At -F '|' -c 'select id,sku,quantity from public.products where id=15000;'; }
+long_probe() {
+  local url="$1" tmp rc out
   tmp="$(mktemp)"
   set +e
-  psql "$url" -X -v ON_ERROR_STOP=1 -At -F '|' >"$tmp" 2>&1 <<'SQL'
-show statement_timeout;
-select pg_sleep(0.25), count(*) from public.products;
-select id,sku,quantity from public.products where id=15000;
-SQL
-  local rc=$?
+  psql "$url" -X -v ON_ERROR_STOP=1 -At -c 'select pg_sleep(0.25);' >"$tmp" 2>&1
+  rc=$?
   set -e
-  local out
-  out="$(cat "$tmp")"
+  out="$(tr '\n' ';' <"$tmp")"
   rm -f "$tmp"
   printf '%s|%s\n' "$rc" "$out"
 }
-
-assert_source() {
-  local v="$1"
-  grep -Eq '^0\|0([|]|$)' <<<"$v" || return 1
-  grep -Eq '(^|[|])20000($|[|])' <<<"$v" || return 1
-  grep -Fq '15000|SOURCE-SKU-15000|0' <<<"$v" || return 1
-}
-assert_destination() {
-  local v="$1"
-  grep -Eq '^[1-9][0-9]*\|' <<<"$v" || return 1
-  grep -Eqi 'canceling statement due to statement timeout' <<<"$v" || return 1
-  ! grep -Fq '15000|SOURCE-SKU-15000|0' <<<"$v" || return 1
+assert_runtime_boundary() {
+  local src_setting="$1" dst_setting="$2" src_row="$3" dst_row="$4" src_probe="$5" dst_probe="$6"
+  [[ "$src_setting" == '0' ]] || return 1
+  [[ "$dst_setting" == '100ms' ]] || return 1
+  [[ "$src_row" == '15000|SOURCE-SKU-15000|0' ]] || return 1
+  [[ "$dst_row" == '15000|SOURCE-SKU-15000|0' ]] || return 1
+  grep -Eq '^0\|' <<<"$src_probe" || return 1
+  grep -Eq '^[1-9][0-9]*\|' <<<"$dst_probe" || return 1
+  grep -Eqi 'canceling statement due to statement timeout' <<<"$dst_probe" || return 1
 }
 
-src_setting="$(role_setting "$SRC_ADMIN")"; dst_setting="$(role_setting "$DST_ADMIN")"
-src_probe="$(probe "$SRC_APP")"; dst_probe="$(probe "$DST_APP")"
-printf 'BEFORE\nsource role setting=%s\ndestination role setting=%s\nsource app statement-timeout probe=%s\ndestination app statement-timeout probe=%s\n' "$src_setting" "$dst_setting" "$src_probe" "$dst_probe"
-[[ "${src_setting,,}" == 'statement_timeout=0' ]] || { echo 'Source fixture did not establish unlimited statement_timeout.' >&2; exit 2; }
-[[ "${dst_setting,,}" == 'statement_timeout=100ms' ]] || { echo 'Destination fixture did not establish 100ms statement_timeout.' >&2; exit 2; }
-assert_source "$src_probe" || { echo "Source application probe did not complete under statement_timeout=0: $src_probe" >&2; exit 2; }
-assert_destination "$dst_probe" || { echo "Destination application probe did not time out as required: $dst_probe" >&2; exit 2; }
+src_catalog="$(catalog_setting "$SRC_ADMIN")"; dst_catalog="$(catalog_setting "$DST_ADMIN")"
+src_effective="$(effective_setting "$SRC_APP")"; dst_effective="$(effective_setting "$DST_APP")"
+src_row="$(ordinary_row "$SRC_APP")"; dst_row="$(ordinary_row "$DST_APP")"
+src_probe="$(long_probe "$SRC_APP")"; dst_probe="$(long_probe "$DST_APP")"
+printf 'BEFORE\nsource catalog setting=%s\ndestination catalog setting=%s\nsource effective setting=%s\ndestination effective setting=%s\nsource ordinary row=%s\ndestination ordinary row=%s\nsource long probe=%s\ndestination long probe=%s\n' "$src_catalog" "$dst_catalog" "$src_effective" "$dst_effective" "$src_row" "$dst_row" "$src_probe" "$dst_probe"
+[[ "${src_catalog,,}" == statement_timeout=* && "${dst_catalog,,}" == statement_timeout=* ]] || { echo 'Catalog fixture did not persist both role settings.' >&2; exit 2; }
+assert_runtime_boundary "$src_effective" "$dst_effective" "$src_row" "$dst_row" "$src_probe" "$dst_probe" || { echo 'Fixture did not establish the required statement_timeout application boundary.' >&2; exit 2; }
 
 set +e
 out="$(SOURCE_DATABASE_URL="$SRC_ADMIN" DESTINATION_DATABASE_URL="$DST_ADMIN" bash scripts/neon-sync/append-sync.sh 2>&1)"; rc=$?
@@ -86,13 +78,13 @@ if [[ "$rc" -ne 0 ]]; then
   echo 'NEON_ROLE_STATEMENT_TIMEOUT_DRIFT_FAIL_CLOSED=false'; exit 1
 fi
 
-dst_setting_after="$(role_setting "$DST_ADMIN")"
-dst_row="$(psql "$DST_ADMIN" -v ON_ERROR_STOP=1 -At -F '|' -c 'select id,sku,quantity from public.products where id=20001;')"
-src_after="$(probe "$SRC_APP")"; dst_after="$(probe "$DST_APP")"
-printf 'AFTER\ndestination role setting=%s\nappended source row=%s\nsource app statement-timeout probe=%s\ndestination app statement-timeout probe=%s\nNEON_ROLE_STATEMENT_TIMEOUT_DRIFT_SYNC_EXIT=%s\n' "$dst_setting_after" "$dst_row" "$src_after" "$dst_after" "$rc"
-[[ "${dst_setting_after,,}" == 'statement_timeout=100ms' ]] || { echo 'Destination statement_timeout changed unexpectedly.' >&2; exit 2; }
-[[ "$dst_row" == '20001|SOURCE-SKU-20001|11' ]] || { echo 'Legitimate application row did not synchronize.' >&2; exit 2; }
-assert_source "$src_after" || { echo 'Source statement_timeout behavior did not persist.' >&2; exit 2; }
-assert_destination "$dst_after" || { echo 'Destination statement_timeout behavior did not persist.' >&2; exit 2; }
+dst_catalog_after="$(catalog_setting "$DST_ADMIN")"
+src_effective_after="$(effective_setting "$SRC_APP")"; dst_effective_after="$(effective_setting "$DST_APP")"
+src_row_after="$(ordinary_row "$SRC_APP")"; dst_row_after="$(ordinary_row "$DST_APP")"
+dst_appended="$(psql "$DST_ADMIN" -v ON_ERROR_STOP=1 -At -F '|' -c 'select id,sku,quantity from public.products where id=20001;')"
+src_probe_after="$(long_probe "$SRC_APP")"; dst_probe_after="$(long_probe "$DST_APP")"
+printf 'AFTER\ndestination catalog setting=%s\nsource effective setting=%s\ndestination effective setting=%s\nappended source row=%s\nsource long probe=%s\ndestination long probe=%s\nNEON_ROLE_STATEMENT_TIMEOUT_DRIFT_SYNC_EXIT=%s\n' "$dst_catalog_after" "$src_effective_after" "$dst_effective_after" "$dst_appended" "$src_probe_after" "$dst_probe_after" "$rc"
+[[ "$dst_appended" == '20001|SOURCE-SKU-20001|11' ]] || { echo 'Legitimate application row did not synchronize.' >&2; exit 2; }
+assert_runtime_boundary "$src_effective_after" "$dst_effective_after" "$src_row_after" "$dst_row_after" "$src_probe_after" "$dst_probe_after" || { echo 'statement_timeout application boundary did not persist after sync.' >&2; exit 2; }
 echo 'NEON_ROLE_STATEMENT_TIMEOUT_DRIFT_DETECTED=false'
 exit 1
