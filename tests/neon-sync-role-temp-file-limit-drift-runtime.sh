@@ -69,7 +69,7 @@ assert_source_probe() {
 assert_destination_probe() {
   local v="$1"
   [[ "$v" != 0\|* ]] || return 1
-  grep -Fqi 'temporary file size exceeds temp_file_limit' <<<"$v" || return 1
+  grep -Eqi 'temporary file size exceeds "?temp_file_limit"?' <<<"$v" || return 1
 }
 
 src_setting="$(role_setting "$SRC_ADMIN")"
