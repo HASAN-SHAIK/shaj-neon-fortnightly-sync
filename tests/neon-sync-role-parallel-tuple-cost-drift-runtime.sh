@@ -67,14 +67,14 @@ assert_source() {
   local v="$1"
   grep -Fxiq '0' <<<"$v" || return 1
   grep -Eq 'Gather Merge|Gather' <<<"$v" || return 1
-  grep -Eq 'Parallel Seq Scan on parallel_tuple_cost_probe' <<<"$v" || return 1
+  grep -Eq 'Parallel (Seq|Index) Scan .*parallel_tuple_cost_probe' <<<"$v" || return 1
   assert_common "$v"
 }
 assert_destination() {
   local v="$1"
   grep -Fxiq '1000' <<<"$v" || return 1
-  grep -Eq 'Seq Scan on parallel_tuple_cost_probe' <<<"$v" || return 1
-  ! grep -Eq 'Parallel Seq Scan on parallel_tuple_cost_probe' <<<"$v" || return 1
+  grep -Eq '(^|[[:space:]])(Seq|Index) Scan .*parallel_tuple_cost_probe' <<<"$v" || return 1
+  ! grep -Eq 'Gather Merge|Gather|Parallel (Seq|Index) Scan .*parallel_tuple_cost_probe' <<<"$v" || return 1
   assert_common "$v"
 }
 digest() { grep -E '^[0-9a-f]{32}$' <<<"$1" | tail -n1; }
@@ -83,8 +83,8 @@ src_setting="$(role_setting "$SRC_ADMIN")"; dst_setting="$(role_setting "$DST_AD
 src_probe="$(probe "$SRC_APP")"; dst_probe="$(probe "$DST_APP")"
 printf 'BEFORE\nsource role setting=%s\ndestination role setting=%s\nsource app parallel-tuple-cost probe=%s\ndestination app parallel-tuple-cost probe=%s\n' "$src_setting" "$dst_setting" "$src_probe" "$dst_probe"
 [[ "${src_setting,,}" == 'parallel_tuple_cost=0' && "${dst_setting,,}" == 'parallel_tuple_cost=1000' ]] || { echo 'Fixture did not establish parallel_tuple_cost drift.' >&2; exit 2; }
-assert_source "$src_probe" || { echo "Source did not use parallel scan under parallel_tuple_cost=0: $src_probe" >&2; exit 2; }
-assert_destination "$dst_probe" || { echo "Destination did not use serial scan under parallel_tuple_cost=1000: $dst_probe" >&2; exit 2; }
+assert_source "$src_probe" || { echo "Source did not use parallel execution under parallel_tuple_cost=0: $src_probe" >&2; exit 2; }
+assert_destination "$dst_probe" || { echo "Destination did not use serial execution under parallel_tuple_cost=1000: $dst_probe" >&2; exit 2; }
 [[ "$(digest "$src_probe")" == "$(digest "$dst_probe")" ]] || { echo 'Probe results differ before sync.' >&2; exit 2; }
 
 set +e
