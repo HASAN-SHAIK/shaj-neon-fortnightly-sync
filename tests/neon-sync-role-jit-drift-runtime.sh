@@ -14,6 +14,7 @@ alter role cycle_app set jit = off;
 alter role cycle_app set jit_above_cost = 0;
 alter role cycle_app set jit_inline_above_cost = 0;
 alter role cycle_app set jit_optimize_above_cost = 0;
+alter role cycle_app set max_parallel_workers_per_gather = 0;
 create database cycle_d_source;
 SQL
 psql "$DST_ROOT" -v ON_ERROR_STOP=1 <<'SQL'
@@ -22,6 +23,7 @@ alter role cycle_app set jit = on;
 alter role cycle_app set jit_above_cost = 0;
 alter role cycle_app set jit_inline_above_cost = 0;
 alter role cycle_app set jit_optimize_above_cost = 0;
+alter role cycle_app set max_parallel_workers_per_gather = 0;
 create database cycle_d_destination;
 SQL
 
@@ -31,19 +33,14 @@ create table public.products (id bigint primary key, sku text not null, quantity
 create table public.jit_probe (id bigint primary key, quantity integer not null, price numeric(12,2) not null);
 grant usage on schema public to cycle_app;
 grant select on public.products, public.jit_probe to cycle_app;
-insert into public.products
-select g, 'SOURCE-SKU-' || lpad(g::text,5,'0'), g % 100 from generate_series(1,20000) g;
-insert into public.jit_probe
-select g, (g % 97)::integer, ((g % 10000) / 100.0)::numeric(12,2) from generate_series(1,250000) g;
-analyze public.products;
-analyze public.jit_probe;
+insert into public.products select g, 'SOURCE-SKU-' || lpad(g::text,5,'0'), g % 100 from generate_series(1,20000) g;
+insert into public.jit_probe select g, (g % 97)::integer, ((g % 10000) / 100.0)::numeric(12,2) from generate_series(1,250000) g;
+analyze public.products; analyze public.jit_probe;
 SQL
 done
 psql "$SRC_ADMIN" -v ON_ERROR_STOP=1 -c "insert into public.products values (20001,'SOURCE-SKU-20001',11); analyze public.products;"
 
-catalog_setting() {
-  psql "$1" -v ON_ERROR_STOP=1 -At -c "select cfg from pg_db_role_setting s join pg_roles r on r.oid=s.setrole cross join lateral unnest(s.setconfig) cfg where r.rolname='cycle_app' and s.setdatabase=0 and lower(cfg) like 'jit=%';"
-}
+catalog_setting() { psql "$1" -v ON_ERROR_STOP=1 -At -c "select cfg from pg_db_role_setting s join pg_roles r on r.oid=s.setrole cross join lateral unnest(s.setconfig) cfg where r.rolname='cycle_app' and s.setdatabase=0 and lower(cfg) like 'jit=%';"; }
 effective_setting() { psql "$1" -X -v ON_ERROR_STOP=1 -At -c 'show jit;'; }
 ordinary_row() { psql "$1" -X -v ON_ERROR_STOP=1 -At -F '|' -c 'select id,sku,quantity from public.products where id=15000;'; }
 query_result() { psql "$1" -X -v ON_ERROR_STOP=1 -At -c "select md5(sum((quantity::numeric * price) + sqrt(id::double precision))::text) from public.jit_probe where quantity between 10 and 90;"; }
@@ -51,12 +48,10 @@ query_plan() { psql "$1" -X -v ON_ERROR_STOP=1 -At -c "explain (analyze, buffers
 
 assert_jit_boundary() {
   local src_setting="$1" dst_setting="$2" src_row="$3" dst_row="$4" src_result="$5" dst_result="$6" src_plan="$7" dst_plan="$8"
-  [[ "$src_setting" == 'off' ]] || return 1
-  [[ "$dst_setting" == 'on' ]] || return 1
-  [[ "$src_row" == '15000|SOURCE-SKU-15000|0' ]] || return 1
-  [[ "$dst_row" == '15000|SOURCE-SKU-15000|0' ]] || return 1
+  [[ "$src_setting" == 'off' && "$dst_setting" == 'on' ]] || return 1
+  [[ "$src_row" == '15000|SOURCE-SKU-15000|0' && "$dst_row" == '15000|SOURCE-SKU-15000|0' ]] || return 1
   [[ -n "$src_result" && "$src_result" == "$dst_result" ]] || return 1
-  if grep -Eqi '(^|[[:space:]])JIT:' <<<"$src_plan"; then return 1; fi
+  ! grep -Eqi '(^|[[:space:]])JIT:' <<<"$src_plan" || return 1
   grep -Eqi '(^|[[:space:]])JIT:' <<<"$dst_plan" || return 1
   grep -Eqi 'Functions:|Timing:.*Generation|Options:.*Inlining' <<<"$dst_plan" || return 1
 }
@@ -76,9 +71,7 @@ set -e
 printf '%s\n' "$out"
 if [[ "$rc" -ne 0 ]]; then
   printf 'NEON_ROLE_JIT_DRIFT_SYNC_EXIT=%s\n' "$rc"
-  if grep -Eqi '(^|[^a-z])jit([^a-z]|$)|pg_db_role_setting|role setting' <<<"$out"; then
-    echo 'NEON_ROLE_JIT_DRIFT_FAIL_CLOSED=true'; exit 0
-  fi
+  if grep -Eqi '(^|[^a-z])jit([^a-z]|$)|pg_db_role_setting|role setting' <<<"$out"; then echo 'NEON_ROLE_JIT_DRIFT_FAIL_CLOSED=true'; exit 0; fi
   echo 'NEON_ROLE_JIT_DRIFT_FAIL_CLOSED=false'; exit 1
 fi
 
