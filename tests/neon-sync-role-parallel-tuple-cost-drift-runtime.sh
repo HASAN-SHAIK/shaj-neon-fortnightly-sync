@@ -50,7 +50,6 @@ show parallel_tuple_cost;
 set max_parallel_workers_per_gather=4;
 set min_parallel_table_scan_size=0;
 set parallel_setup_cost=0;
-set force_parallel_mode=off;
 explain (analyze, costs off, timing off, summary off)
 select id,bucket,payload from public.parallel_tuple_cost_probe where bucket < 50 order by id;
 select md5(string_agg(id::text || ':' || bucket::text || ':' || payload, ',' order by id))
