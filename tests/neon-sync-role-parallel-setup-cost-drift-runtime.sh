@@ -75,7 +75,7 @@ assert_source() {
 }
 assert_destination() {
   local v="$1"
-  grep -Fxiq '1e\+09|1000000000' <<<"$v" || return 1
+  grep -Eiq '^(1e\+09|1000000000)$' <<<"$v" || return 1
   grep -Eq 'Seq Scan on parallel_setup_cost_probe' <<<"$v" || return 1
   ! grep -Eq 'Gather|Gather Merge|Parallel Seq Scan on parallel_setup_cost_probe' <<<"$v" || return 1
   assert_common "$v"
