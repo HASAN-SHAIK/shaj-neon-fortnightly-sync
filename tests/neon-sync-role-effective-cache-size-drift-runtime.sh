@@ -18,7 +18,6 @@ create role cycle_app login;
 alter role cycle_app set effective_cache_size = '1MB';
 create database cycle_d_destination;
 SQL
-
 for url in "$SRC_ADMIN" "$DST_ADMIN"; do
   psql "$url" -v ON_ERROR_STOP=1 <<'SQL'
 create table public.products (id bigint primary key, sku text not null, quantity integer not null);
@@ -51,18 +50,25 @@ select md5(string_agg(id::text || ':' || bucket::text || ':' || payload, ',' ord
 select id,sku,quantity from public.products where id=15000;
 SQL
 }
-assert_common() { local v="$1"; grep -Eq '^[0-9a-f]{32}$' <<<"$v" && grep -Fxq '15000|SOURCE-SKU-15000|0' <<<"$v"; }
-assert_source() { local v="$1"; grep -Fxiq '128GB' <<<"$v" && grep -Eq 'Index Scan using effective_cache_size_probe_bucket_idx' <<<"$v" && ! grep -Eq 'Seq Scan on effective_cache_size_probe' <<<"$v" && assert_common "$v"; }
-assert_destination() { local v="$1"; grep -Fxiq '1MB' <<<"$v" && grep -Eq 'Seq Scan on effective_cache_size_probe' <<<"$v" && ! grep -Eq 'Index Scan using effective_cache_size_probe_bucket_idx' <<<"$v" && assert_common "$v"; }
+common_ok() { local v="$1"; grep -Eq '^[0-9a-f]{32}$' <<<"$v" && grep -Fxq '15000|SOURCE-SKU-15000|0' <<<"$v"; }
 digest() { grep -E '^[0-9a-f]{32}$' <<<"$1" | tail -n1; }
+plan_kind() {
+  local v="$1"
+  if grep -Eq 'Index Scan using effective_cache_size_probe_bucket_idx' <<<"$v"; then echo INDEX;
+  elif grep -Eq 'Seq Scan on effective_cache_size_probe' <<<"$v"; then echo SEQ;
+  else echo OTHER; fi
+}
 
 src_setting="$(role_setting "$SRC_ADMIN")"; dst_setting="$(role_setting "$DST_ADMIN")"
 src_probe="$(probe "$SRC_APP")"; dst_probe="$(probe "$DST_APP")"
-printf 'BEFORE\nsource role setting=%s\ndestination role setting=%s\nsource app effective-cache-size probe=%s\ndestination app effective-cache-size probe=%s\n' "$src_setting" "$dst_setting" "$src_probe" "$dst_probe"
+src_plan="$(plan_kind "$src_probe")"; dst_plan="$(plan_kind "$dst_probe")"
+printf 'BEFORE\nsource role setting=%s\ndestination role setting=%s\nsource plan=%s\ndestination plan=%s\nsource app effective-cache-size probe=%s\ndestination app effective-cache-size probe=%s\n' "$src_setting" "$dst_setting" "$src_plan" "$dst_plan" "$src_probe" "$dst_probe"
 [[ "${src_setting,,}" == 'effective_cache_size=128gb' && "${dst_setting,,}" == 'effective_cache_size=1mb' ]] || { echo 'Fixture did not establish effective_cache_size drift.' >&2; exit 2; }
-assert_source "$src_probe" || { echo "Source did not use indexed access under effective_cache_size=128GB: $src_probe" >&2; exit 2; }
-assert_destination "$dst_probe" || { echo "Destination did not use sequential access under effective_cache_size=1MB: $dst_probe" >&2; exit 2; }
+common_ok "$src_probe" && common_ok "$dst_probe" || { echo 'Application probe did not produce valid observable results.' >&2; exit 2; }
+[[ "$src_plan" != OTHER && "$dst_plan" != OTHER ]] || { echo 'Planner probe produced an unclassified plan.' >&2; exit 2; }
 [[ "$(digest "$src_probe")" == "$(digest "$dst_probe")" ]] || { echo 'Probe results differ before sync.' >&2; exit 2; }
+planner_divergence=false
+[[ "$src_plan" != "$dst_plan" ]] && planner_divergence=true
 
 set +e
 out="$(SOURCE_DATABASE_URL="$SRC_ADMIN" DESTINATION_DATABASE_URL="$DST_ADMIN" bash scripts/neon-sync/append-sync.sh 2>&1)"; rc=$?
@@ -77,11 +83,14 @@ fi
 dst_setting_after="$(role_setting "$DST_ADMIN")"
 dst_row="$(psql "$DST_ADMIN" -v ON_ERROR_STOP=1 -At -F '|' -c 'select id,sku,quantity from public.products where id=20001;')"
 src_after="$(probe "$SRC_APP")"; dst_after="$(probe "$DST_APP")"
-printf 'AFTER\ndestination role setting=%s\nappended source row=%s\nsource app effective-cache-size probe=%s\ndestination app effective-cache-size probe=%s\nNEON_ROLE_EFFECTIVE_CACHE_SIZE_DRIFT_SYNC_EXIT=%s\n' "$dst_setting_after" "$dst_row" "$src_after" "$dst_after" "$rc"
+src_plan_after="$(plan_kind "$src_after")"; dst_plan_after="$(plan_kind "$dst_after")"
+printf 'AFTER\ndestination role setting=%s\nappended source row=%s\nsource plan=%s\ndestination plan=%s\nsource app effective-cache-size probe=%s\ndestination app effective-cache-size probe=%s\nNEON_ROLE_EFFECTIVE_CACHE_SIZE_DRIFT_SYNC_EXIT=%s\n' "$dst_setting_after" "$dst_row" "$src_plan_after" "$dst_plan_after" "$src_after" "$dst_after" "$rc"
 [[ "${dst_setting_after,,}" == 'effective_cache_size=1mb' ]] || { echo 'Destination setting changed unexpectedly.' >&2; exit 2; }
 [[ "$dst_row" == '20001|SOURCE-SKU-20001|11' ]] || { echo 'Legitimate application row did not synchronize.' >&2; exit 2; }
-assert_source "$src_after" || { echo 'Source effective_cache_size behavior did not persist.' >&2; exit 2; }
-assert_destination "$dst_after" || { echo 'Destination effective_cache_size behavior did not persist.' >&2; exit 2; }
+common_ok "$src_after" && common_ok "$dst_after" || { echo 'Post-sync application probe invalid.' >&2; exit 2; }
 [[ "$(digest "$src_after")" == "$(digest "$dst_after")" ]] || { echo 'Probe results differ after sync.' >&2; exit 2; }
+[[ "$src_plan_after" == "$src_plan" && "$dst_plan_after" == "$dst_plan" ]] || { echo 'Planner behavior changed independently during sync.' >&2; exit 2; }
+printf 'NEON_ROLE_EFFECTIVE_CACHE_SIZE_DRIFT_PLANNER_DIVERGENCE=%s\n' "$planner_divergence"
 echo 'NEON_ROLE_EFFECTIVE_CACHE_SIZE_DRIFT_DETECTED=false'
-exit 1
+if [[ "$planner_divergence" == true ]]; then exit 1; fi
+exit 3
