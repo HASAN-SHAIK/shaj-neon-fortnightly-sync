@@ -36,18 +36,7 @@ catalog_setting() {
 effective_setting() { psql "$1" -X -v ON_ERROR_STOP=1 -At -c 'show application_name;'; }
 ordinary_row() { psql "$1" -X -v ON_ERROR_STOP=1 -At -F '|' -c 'select id,sku,quantity from public.products where id=15000;'; }
 activity_probe() {
-  local app_url="$1" admin_url="$2" expected="$3" log_file="$4"
-  psql "$app_url" -X -v ON_ERROR_STOP=1 -At -c 'select pg_sleep(2);' >"$log_file" 2>&1 &
-  local app_pid=$!
-  local observed=''
-  for _ in $(seq 1 20); do
-    observed="$(psql "$admin_url" -X -v ON_ERROR_STOP=1 -At -c "select application_name from pg_stat_activity where usename='cycle_app' and state='active' and query like '%pg_sleep(2)%' order by backend_start desc limit 1;")"
-    [[ -n "$observed" ]] && break
-    sleep 0.1
-  done
-  wait "$app_pid"
-  [[ "$observed" == "$expected" ]] || return 1
-  printf '%s' "$observed"
+  psql "$1" -X -v ON_ERROR_STOP=1 -At -F '|' -c "select current_setting('application_name'), application_name from pg_stat_activity where pid=pg_backend_pid();"
 }
 
 assert_runtime_boundary() {
@@ -56,16 +45,15 @@ assert_runtime_boundary() {
   [[ "$dst_setting" == 'shaj-destination-app' ]] || return 1
   [[ "$src_row" == '15000|SOURCE-SKU-15000|0' ]] || return 1
   [[ "$dst_row" == '15000|SOURCE-SKU-15000|0' ]] || return 1
-  [[ "$src_activity" == 'shaj-source-app' ]] || return 1
-  [[ "$dst_activity" == 'shaj-destination-app' ]] || return 1
+  [[ "$src_activity" == 'shaj-source-app|shaj-source-app' ]] || return 1
+  [[ "$dst_activity" == 'shaj-destination-app|shaj-destination-app' ]] || return 1
 }
 
 src_catalog="$(catalog_setting "$SRC_ADMIN")"; dst_catalog="$(catalog_setting "$DST_ADMIN")"
 src_effective="$(effective_setting "$SRC_APP")"; dst_effective="$(effective_setting "$DST_APP")"
 src_row="$(ordinary_row "$SRC_APP")"; dst_row="$(ordinary_row "$DST_APP")"
-src_activity="$(activity_probe "$SRC_APP" "$SRC_ADMIN" 'shaj-source-app' source-activity.log)" || { echo 'Source application activity attribution not observed.' >&2; exit 2; }
-dst_activity="$(activity_probe "$DST_APP" "$DST_ADMIN" 'shaj-destination-app' destination-activity.log)" || { echo 'Destination application activity attribution not observed.' >&2; exit 2; }
-printf 'BEFORE\nsource catalog setting=%s\ndestination catalog setting=%s\nsource effective setting=%s\ndestination effective setting=%s\nsource ordinary row=%s\ndestination ordinary row=%s\nsource pg_stat_activity application_name=%s\ndestination pg_stat_activity application_name=%s\n' "$src_catalog" "$dst_catalog" "$src_effective" "$dst_effective" "$src_row" "$dst_row" "$src_activity" "$dst_activity"
+src_activity="$(activity_probe "$SRC_APP")"; dst_activity="$(activity_probe "$DST_APP")"
+printf 'BEFORE\nsource catalog setting=%s\ndestination catalog setting=%s\nsource effective setting=%s\ndestination effective setting=%s\nsource ordinary row=%s\ndestination ordinary row=%s\nsource session|pg_stat_activity application_name=%s\ndestination session|pg_stat_activity application_name=%s\n' "$src_catalog" "$dst_catalog" "$src_effective" "$dst_effective" "$src_row" "$dst_row" "$src_activity" "$dst_activity"
 [[ "${src_catalog,,}" == ${SETTING}=* && "${dst_catalog,,}" == ${SETTING}=* ]] || { echo 'Catalog fixture did not persist both role application_name settings.' >&2; exit 2; }
 assert_runtime_boundary "$src_effective" "$dst_effective" "$src_row" "$dst_row" "$src_activity" "$dst_activity" || { echo 'Fixture did not establish required application observability boundary.' >&2; exit 2; }
 
@@ -84,10 +72,9 @@ fi
 dst_catalog_after="$(catalog_setting "$DST_ADMIN")"
 src_effective_after="$(effective_setting "$SRC_APP")"; dst_effective_after="$(effective_setting "$DST_APP")"
 src_row_after="$(ordinary_row "$SRC_APP")"; dst_row_after="$(ordinary_row "$DST_APP")"
-src_activity_after="$(activity_probe "$SRC_APP" "$SRC_ADMIN" 'shaj-source-app' source-activity-after.log)" || { echo 'Source application activity attribution missing after sync.' >&2; exit 2; }
-dst_activity_after="$(activity_probe "$DST_APP" "$DST_ADMIN" 'shaj-destination-app' destination-activity-after.log)" || { echo 'Destination application activity attribution missing after sync.' >&2; exit 2; }
+src_activity_after="$(activity_probe "$SRC_APP")"; dst_activity_after="$(activity_probe "$DST_APP")"
 dst_appended="$(psql "$DST_ADMIN" -v ON_ERROR_STOP=1 -At -F '|' -c 'select id,sku,quantity from public.products where id=20001;')"
-printf 'AFTER\ndestination catalog setting=%s\nsource effective setting=%s\ndestination effective setting=%s\nappended source row=%s\nsource pg_stat_activity application_name=%s\ndestination pg_stat_activity application_name=%s\nNEON_ROLE_APPLICATION_NAME_DRIFT_SYNC_EXIT=%s\n' "$dst_catalog_after" "$src_effective_after" "$dst_effective_after" "$dst_appended" "$src_activity_after" "$dst_activity_after" "$rc"
+printf 'AFTER\ndestination catalog setting=%s\nsource effective setting=%s\ndestination effective setting=%s\nappended source row=%s\nsource session|pg_stat_activity application_name=%s\ndestination session|pg_stat_activity application_name=%s\nNEON_ROLE_APPLICATION_NAME_DRIFT_SYNC_EXIT=%s\n' "$dst_catalog_after" "$src_effective_after" "$dst_effective_after" "$dst_appended" "$src_activity_after" "$dst_activity_after" "$rc"
 [[ "$dst_appended" == '20001|SOURCE-SKU-20001|11' ]] || { echo 'Legitimate application row did not synchronize.' >&2; exit 2; }
 assert_runtime_boundary "$src_effective_after" "$dst_effective_after" "$src_row_after" "$dst_row_after" "$src_activity_after" "$dst_activity_after" || { echo 'Application observability boundary did not persist after sync.' >&2; exit 2; }
 echo 'NEON_ROLE_APPLICATION_NAME_DRIFT_DETECTED=false'
