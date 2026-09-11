@@ -5,8 +5,8 @@ SRC_ROOT='postgresql://postgres@127.0.0.1:55432/postgres'
 DST_ROOT='postgresql://postgres@127.0.0.1:55433/postgres'
 SRC_ADMIN='postgresql://postgres@127.0.0.1:55432/cycle_d_source'
 DST_ADMIN='postgresql://postgres@127.0.0.1:55433/cycle_d_destination'
-SRC_APP='postgresql://cycle_app@127.0.0.1:55432/cycle_d_source?fallback_application_name='
-DST_APP='postgresql://cycle_app@127.0.0.1:55433/cycle_d_destination?fallback_application_name='
+SRC_APP='postgresql://cycle_app@127.0.0.1:55432/cycle_d_source'
+DST_APP='postgresql://cycle_app@127.0.0.1:55433/cycle_d_destination'
 SETTING='application_name'
 
 psql "$SRC_ROOT" -v ON_ERROR_STOP=1 <<'SQL'
@@ -33,11 +33,22 @@ psql "$SRC_ADMIN" -v ON_ERROR_STOP=1 -c "insert into public.products values (200
 catalog_setting() {
   psql "$1" -v ON_ERROR_STOP=1 -At -c "select cfg from pg_db_role_setting s join pg_roles r on r.oid=s.setrole cross join lateral unnest(s.setconfig) cfg where r.rolname='cycle_app' and s.setdatabase=0 and lower(cfg) like '${SETTING}=%';"
 }
-effective_setting() { psql "$1" -X -v ON_ERROR_STOP=1 -At -c 'show application_name;'; }
-ordinary_row() { psql "$1" -X -v ON_ERROR_STOP=1 -At -F '|' -c 'select id,sku,quantity from public.products where id=15000;'; }
-activity_probe() {
-  psql "$1" -X -v ON_ERROR_STOP=1 -At -F '|' -c "select current_setting('application_name'), application_name from pg_stat_activity where pid=pg_backend_pid();"
+app_query() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+import psycopg2
+url, sql = sys.argv[1], sys.argv[2]
+with psycopg2.connect(url) as conn:
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        if cur.description:
+            for row in cur.fetchall():
+                print('|'.join('' if value is None else str(value) for value in row))
+PY
 }
+effective_setting() { app_query "$1" 'show application_name'; }
+ordinary_row() { app_query "$1" 'select id,sku,quantity from public.products where id=15000'; }
+activity_probe() { app_query "$1" "select current_setting('application_name'), application_name from pg_stat_activity where pid=pg_backend_pid()"; }
 
 assert_runtime_boundary() {
   local src_setting="$1" dst_setting="$2" src_row="$3" dst_row="$4" src_activity="$5" dst_activity="$6"
