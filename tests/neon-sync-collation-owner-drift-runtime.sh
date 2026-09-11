@@ -30,7 +30,8 @@ create table public.products (
 insert into public.products values
   (1,'zebra',7),
   (2,'alpha',11);
-grant usage on schema public to cycle_other, cycle_app;
+grant usage, create on schema public to cycle_other;
+grant usage on schema public to cycle_app;
 grant select on public.products to cycle_app;
 SQL
 
@@ -44,7 +45,8 @@ create table public.products (
 );
 insert into public.products values
   (1,'zebra',7);
-grant usage on schema public to cycle_other, cycle_app;
+grant usage, create on schema public to cycle_other;
+grant usage on schema public to cycle_app;
 grant select on public.products to cycle_app;
 SQL
 
