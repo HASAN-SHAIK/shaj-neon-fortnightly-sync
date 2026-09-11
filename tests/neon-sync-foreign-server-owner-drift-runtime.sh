@@ -28,7 +28,7 @@ grant usage on schema public to cycle_app, cycle_other;
 grant select on public.products to cycle_app;
 select format('create server retail_loopback foreign data wrapper postgres_fdw options (host ''127.0.0.1'', port ''5432'', dbname %L)', current_database()) \gexec
 select format('alter server retail_loopback owner to %I', :'owner') \gexec
-create user mapping for cycle_app server retail_loopback options (user 'cycle_app', password 'app');
+create user mapping for cycle_app server retail_loopback options (user 'cycle_app', password 'app', password_required 'false');
 create foreign table public.products_remote(id bigint, sku text, quantity integer)
   server retail_loopback options (schema_name 'public', table_name 'products');
 grant select on public.products_remote to cycle_app;
