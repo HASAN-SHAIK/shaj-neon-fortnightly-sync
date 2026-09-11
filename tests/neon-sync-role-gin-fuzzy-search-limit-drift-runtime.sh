@@ -33,7 +33,7 @@ insert into public.products
 select g, 'SOURCE-SKU-' || lpad(g::text,5,'0'), g % 100 from generate_series(1,20000) g;
 insert into public.gin_fuzzy_probe(id, tags)
 select g, array[(g - 1) % 20] from generate_series(1,20000) g;
-analyze public.gin_fuzzy_probe;
+vacuum analyze public.gin_fuzzy_probe;
 SQL
 done
 psql "$SRC_ADMIN" -v ON_ERROR_STOP=1 -c "insert into public.products values (20001,'SOURCE-SKU-20001',11);"
