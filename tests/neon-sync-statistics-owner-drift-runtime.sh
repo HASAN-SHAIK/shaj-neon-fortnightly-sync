@@ -37,12 +37,12 @@ grant select on public.products to cycle_app;
 insert into public.products
 select g, 'SKU-' || g, g % 17, ((g - 1) % 100) + 1, ((g - 1) % 100) + 1
 from generate_series(1,10000) g;
-insert into public.products values (20001,'SOURCE-SKU-20001',11,42,42);
 set role cycle_owner;
 create statistics public.retail_product_corr (dependencies)
 on category_id, warehouse_id from public.products;
 reset role;
 analyze public.products;
+insert into public.products values (20001,'SOURCE-SKU-20001',11,42,42);
 SQL
 }
 
