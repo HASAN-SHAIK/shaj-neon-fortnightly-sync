@@ -74,6 +74,10 @@ printf 'BEFORE\nsource catalog setting=%s\ndestination catalog setting=%s\nsourc
 [[ "${src_catalog,,}" == ${SETTING}=off && "${dst_catalog,,}" == ${SETTING}=on ]] || { echo 'Catalog fixture did not persist both lo_compat_privileges role settings.' >&2; exit 2; }
 assert_runtime_boundary "$src_effective" "$dst_effective" "$src_row" "$dst_row" "$src_probe" "$dst_probe" || { echo 'Fixture did not establish the large-object access-control boundary.' >&2; exit 2; }
 
+# Remove only the destination fixture copy before production sync so pg_dump can restore
+# source large-object state without an artificial duplicate-OID collision.
+psql "$DST_ADMIN" -v ON_ERROR_STOP=1 -c 'select lo_unlink(90001);' >/dev/null
+
 set +e
 out="$(SOURCE_DATABASE_URL="$SRC_ADMIN" DESTINATION_DATABASE_URL="$DST_ADMIN" bash scripts/neon-sync/append-sync.sh 2>&1)"; rc=$?
 set -e
