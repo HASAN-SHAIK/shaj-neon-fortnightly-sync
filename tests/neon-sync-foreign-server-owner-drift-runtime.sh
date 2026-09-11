@@ -37,7 +37,7 @@ SQL
 
 setup_db "$SOURCE_ADMIN_URL" cycle_owner
 setup_db "$DESTINATION_ADMIN_URL" cycle_other
-psql "$SOURCE_ADMIN_URL" -v ON_ERROR_STOP=1 -c "insert into public.products values (1,'BASE-SKU-1',7),(2,'SOURCE-SKU-2',11);"
+psql "$SOURCE_ADMIN_URL" -v ON_ERROR_STOP=1 -c "insert into public.products values (1,'BASE-SKU-1',7);"
 psql "$DESTINATION_ADMIN_URL" -v ON_ERROR_STOP=1 -c "insert into public.products values (1,'BASE-SKU-1',7);"
 
 server_owner() {
@@ -77,6 +77,7 @@ fi
 restore_destination_server
 [[ "$(server_owner "$DESTINATION_ADMIN_URL")" == cycle_other ]] || exit 2
 [[ "$(app_probe "$DESTINATION_APP_URL")" == '1|BASE-SKU-1|7' ]] || exit 2
+psql "$SOURCE_ADMIN_URL" -v ON_ERROR_STOP=1 -c "insert into public.products values (2,'SOURCE-SKU-2',11);"
 
 set +e
 runtime_output="$(SOURCE_DATABASE_URL="$SOURCE_ADMIN_URL" DESTINATION_DATABASE_URL="$DESTINATION_ADMIN_URL" bash scripts/neon-sync/append-sync.sh 2>&1)"; sync_exit=$?
