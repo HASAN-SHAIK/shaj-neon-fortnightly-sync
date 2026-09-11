@@ -47,14 +47,17 @@ SQL
 assert_source() {
   local v="$1"
   grep -Fxiq 'off' <<<"$v" || return 1
-  grep -Fq 'products.id' <<<"$v" || return 1
-  ! grep -Fq '"products"."id"' <<<"$v" || return 1
+  grep -Fq 'SELECT id,' <<<"$v" || return 1
+  grep -Fq 'FROM products' <<<"$v" || return 1
+  ! grep -Fq '"id"' <<<"$v" || return 1
+  ! grep -Fq '"products"' <<<"$v" || return 1
   grep -Fxq '15000|SOURCE-SKU-15000|0' <<<"$v" || return 1
 }
 assert_destination() {
   local v="$1"
   grep -Fxiq 'on' <<<"$v" || return 1
-  grep -Fq '"products"."id"' <<<"$v" || return 1
+  grep -Fq 'SELECT "id",' <<<"$v" || return 1
+  grep -Fq 'FROM "products"' <<<"$v" || return 1
   grep -Fxq '15000|SOURCE-SKU-15000|0' <<<"$v" || return 1
 }
 viewdef() { sed -n '2p' <<<"$1"; }
