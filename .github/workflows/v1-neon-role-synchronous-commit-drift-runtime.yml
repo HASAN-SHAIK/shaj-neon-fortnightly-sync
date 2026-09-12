@@ -75,7 +75,13 @@ jobs:
           set -euo pipefail
           grep -Fxq 'NEON_ROLE_SYNCHRONOUS_COMMIT_DRIFT_SYNC_EXIT=0' role-synchronous-commit-drift-runtime.log
           grep -Fxq 'NEON_ROLE_SYNCHRONOUS_COMMIT_DRIFT_DETECTED=false' role-synchronous-commit-drift-runtime.log
-          grep -Fxq 'NEON_ROLE_SYNCHRONOUS_COMMIT_CRASH_DURABILITY_VERIFIED=false' role-synchronous-commit-drift-runtime.log
+      - name: Confirm crash durability observation
+        if: always()
+        run: |
+          set -euo pipefail
+          grep -Fxq 'NEON_ROLE_SYNCHRONOUS_COMMIT_CRASH_DURABILITY_VERIFIED=true' role-synchronous-commit-drift-runtime.log
+          grep -Fxq 'NEON_ROLE_SYNCHRONOUS_COMMIT_SOURCE_ACK_SURVIVED=true' role-synchronous-commit-drift-runtime.log
+          grep -Fxq 'NEON_ROLE_SYNCHRONOUS_COMMIT_DESTINATION_ACK_SURVIVED=false' role-synchronous-commit-drift-runtime.log
       - name: Enforce certification result
         if: always()
         run: |
