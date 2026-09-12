@@ -26,12 +26,21 @@ insert into public.products select g, 'SOURCE-SKU-' || lpad(g::text,5,'0'), g % 
 create table public.fc_a (id integer primary key, k integer not null);
 create table public.fc_b (id integer primary key, k integer not null);
 create table public.fc_c (id integer primary key, k integer not null);
+create table public.fc_d (id integer primary key, k integer not null);
+create table public.fc_e (id integer primary key, k integer not null);
 insert into public.fc_a select g, g % 100 from generate_series(1,5000) g;
-insert into public.fc_b select g, g % 100 from generate_series(1,5000) g;
-insert into public.fc_c select g, g % 100 from generate_series(1,5000) g;
-analyze public.fc_a; analyze public.fc_b; analyze public.fc_c;
+insert into public.fc_b select g, case when g <= 100 then 1 else g % 100 end from generate_series(1,5000) g;
+insert into public.fc_c select g, g % 50 from generate_series(1,5000) g;
+insert into public.fc_d select g, g % 20 from generate_series(1,5000) g;
+insert into public.fc_e select g, g % 10 from generate_series(1,5000) g;
+create index fc_a_k_idx on public.fc_a(k);
+create index fc_b_k_idx on public.fc_b(k);
+create index fc_c_k_idx on public.fc_c(k);
+create index fc_d_k_idx on public.fc_d(k);
+create index fc_e_k_idx on public.fc_e(k);
+analyze public.fc_a; analyze public.fc_b; analyze public.fc_c; analyze public.fc_d; analyze public.fc_e;
 grant usage on schema public to cycle_app;
-grant select on public.products, public.fc_a, public.fc_b, public.fc_c to cycle_app;
+grant select on public.products, public.fc_a, public.fc_b, public.fc_c, public.fc_d, public.fc_e to cycle_app;
 SQL
 done
 psql "$SRC_ADMIN" -v ON_ERROR_STOP=1 -c "insert into public.products values (20001,'SOURCE-SKU-20001',11);"
@@ -39,47 +48,83 @@ psql "$SRC_ADMIN" -v ON_ERROR_STOP=1 -c "insert into public.products values (200
 role_setting() {
   psql "$1" -v ON_ERROR_STOP=1 -At -c "select cfg from pg_db_role_setting s join pg_roles r on r.oid=s.setrole cross join lateral unnest(s.setconfig) cfg where r.rolname='cycle_app' and s.setdatabase=0 and lower(cfg) like 'from_collapse_limit=%';"
 }
-probe() {
-  psql "$1" -X -v ON_ERROR_STOP=1 -At <<'SQL'
-show from_collapse_limit;
-explain (analyze, costs off, summary off, timing off)
-select count(*)
-from (
-  select a.id
-  from public.fc_a a
-  join public.fc_b b on b.id=a.id
-  join public.fc_c c on c.id=a.id
-) s
-where s.id <= 100;
-select count(*)
-from (
-  select a.id
-  from public.fc_a a
-  join public.fc_b b on b.id=a.id
-  join public.fc_c c on c.id=a.id
-) s
-where s.id <= 100;
-select id || '|' || sku || '|' || quantity from public.products where id=15000;
+ordinary_row() {
+  psql "$1" -X -v ON_ERROR_STOP=1 -At -c "select id || '|' || sku || '|' || quantity from public.products where id=15000;"
+}
+query_sql() {
+  case "$1" in
+    q1) cat <<'SQL'
+select count(*) from (
+  select a.id, a.k from public.fc_a a join public.fc_b b on b.id=a.id join public.fc_c c on c.id=a.id
+) s join public.fc_d d on d.id=s.id where s.id <= 500 and d.k < 5;
+SQL
+      ;;
+    q2) cat <<'SQL'
+select count(*) from (
+  select a.id, b.k as bk from public.fc_a a join public.fc_b b on b.id=a.id join public.fc_c c on c.k=b.k
+) s join public.fc_d d on d.id=s.id join public.fc_e e on e.id=d.id where s.id <= 250 and s.bk = 1;
+SQL
+      ;;
+    q3) cat <<'SQL'
+select count(*) from public.fc_e e join (
+  select a.id, c.k as ck from public.fc_a a join public.fc_b b on b.id=a.id join public.fc_c c on c.id=b.id
+) s on s.id=e.id join public.fc_d d on d.k=s.ck where e.id <= 300;
+SQL
+      ;;
+    q4) cat <<'SQL'
+select count(*) from (
+  select a.id, a.k from public.fc_a a join public.fc_b b on b.k=a.k
+) ab join (
+  select c.id, c.k from public.fc_c c join public.fc_d d on d.id=c.id
+) cd on cd.id=ab.id join public.fc_e e on e.id=ab.id where ab.id <= 200;
+SQL
+      ;;
+    *) return 2 ;;
+  esac
+}
+plan_for() {
+  local url="$1" q="$2" rpc="$3"
+  local sql
+  sql="$(query_sql "$q")"
+  psql "$url" -X -v ON_ERROR_STOP=1 -At <<SQL
+set random_page_cost=$rpc;
+set max_parallel_workers_per_gather=0;
+explain (costs on, summary off) $sql
 SQL
 }
-plan_from_probe() {
-  # Probe layout is: setting line, EXPLAIN lines, count line, ordinary-row line.
-  # Compare only EXPLAIN output so the intentionally different GUC setting
-  # cannot itself be misclassified as a concrete execution-plan divergence.
-  sed '1d' <<<"$1" | sed '$d' | sed '$d'
+result_for() {
+  local url="$1" q="$2"
+  local sql
+  sql="$(query_sql "$q")"
+  psql "$url" -X -v ON_ERROR_STOP=1 -At -c "$sql"
+}
+matrix() {
+  local url="$1"
+  local q rpc
+  for q in q1 q2 q3 q4; do
+    for rpc in 1.1 4 16; do
+      printf 'CASE=%s RPC=%s\n' "$q" "$rpc"
+      plan_for "$url" "$q" "$rpc"
+    done
+  done
 }
 
 src_setting="$(role_setting "$SRC_ADMIN")"; dst_setting="$(role_setting "$DST_ADMIN")"
-src_probe="$(probe "$SRC_APP")"; dst_probe="$(probe "$DST_APP")"
-printf 'BEFORE\nsource role setting=%s\ndestination role setting=%s\nsource app from-collapse probe=%s\ndestination app from-collapse probe=%s\n' "$src_setting" "$dst_setting" "$src_probe" "$dst_probe"
+src_row="$(ordinary_row "$SRC_APP")"; dst_row="$(ordinary_row "$DST_APP")"
+printf 'BEFORE\nsource role setting=%s\ndestination role setting=%s\nsource ordinary row=%s\ndestination ordinary row=%s\n' "$src_setting" "$dst_setting" "$src_row" "$dst_row"
 [[ "${src_setting,,}" == 'from_collapse_limit=1' && "${dst_setting,,}" == 'from_collapse_limit=8' ]] || { echo 'Fixture did not establish from_collapse_limit drift.' >&2; exit 2; }
-grep -Fxq '15000|SOURCE-SKU-15000|0' <<<"$src_probe" || { echo 'Source ordinary application row missing.' >&2; exit 2; }
-grep -Fxq '15000|SOURCE-SKU-15000|0' <<<"$dst_probe" || { echo 'Destination ordinary application row missing.' >&2; exit 2; }
-src_count="$(tail -n 2 <<<"$src_probe" | head -n 1)"; dst_count="$(tail -n 2 <<<"$dst_probe" | head -n 1)"
-[[ "$src_count" == '100' && "$dst_count" == '100' ]] || { echo "Join result mismatch: source=$src_count destination=$dst_count" >&2; exit 2; }
+[[ "$src_row" == '15000|SOURCE-SKU-15000|0' && "$dst_row" == '15000|SOURCE-SKU-15000|0' ]] || { echo 'Ordinary application state mismatch.' >&2; exit 2; }
+for q in q1 q2 q3 q4; do
+  s="$(result_for "$SRC_APP" "$q")"; d="$(result_for "$DST_APP" "$q")"
+  printf 'before result %s source=%s destination=%s\n' "$q" "$s" "$d"
+  [[ "$s" == "$d" ]] || { echo "Result mismatch for $q: source=$s destination=$d" >&2; exit 2; }
+done
+src_matrix_before="$(matrix "$SRC_APP")"
+dst_matrix_before="$(matrix "$DST_APP")"
+printf 'source planner matrix before:\n%s\ndestination planner matrix before:\n%s\n' "$src_matrix_before" "$dst_matrix_before"
 
 set +e
-out="$(SOURCE_DATABASE_URL="$SRC_ADMIN" DESTINATION_DATABASE_URL="$DST_ADMIN" EXCLUDED_TABLES='public.fc_a,public.fc_b,public.fc_c' bash scripts/neon-sync/append-sync.sh 2>&1)"; rc=$?
+out="$(SOURCE_DATABASE_URL="$SRC_ADMIN" DESTINATION_DATABASE_URL="$DST_ADMIN" EXCLUDED_TABLES='public.fc_a,public.fc_b,public.fc_c,public.fc_d,public.fc_e' bash scripts/neon-sync/append-sync.sh 2>&1)"; rc=$?
 set -e
 printf '%s\n' "$out"
 if [[ "$rc" -ne 0 ]]; then
@@ -91,18 +136,21 @@ if [[ "$rc" -ne 0 ]]; then
 fi
 
 dst_setting_after="$(role_setting "$DST_ADMIN")"
-dst_row="$(psql "$DST_ADMIN" -v ON_ERROR_STOP=1 -At -F '|' -c 'select id,sku,quantity from public.products where id=20001;')"
-src_after="$(probe "$SRC_APP")"; dst_after="$(probe "$DST_APP")"
-printf 'AFTER\ndestination role setting=%s\nappended source row=%s\nsource app from-collapse probe=%s\ndestination app from-collapse probe=%s\nNEON_ROLE_FROM_COLLAPSE_LIMIT_DRIFT_SYNC_EXIT=%s\n' "$dst_setting_after" "$dst_row" "$src_after" "$dst_after" "$rc"
+dst_appended="$(psql "$DST_ADMIN" -v ON_ERROR_STOP=1 -At -F '|' -c 'select id,sku,quantity from public.products where id=20001;')"
 [[ "${dst_setting_after,,}" == 'from_collapse_limit=8' ]] || { echo 'Destination setting changed unexpectedly.' >&2; exit 2; }
-[[ "$dst_row" == '20001|SOURCE-SKU-20001|11' ]] || { echo 'Legitimate application row did not synchronize.' >&2; exit 2; }
-src_count_after="$(tail -n 2 <<<"$src_after" | head -n 1)"; dst_count_after="$(tail -n 2 <<<"$dst_after" | head -n 1)"
-[[ "$src_count_after" == '100' && "$dst_count_after" == '100' ]] || { echo 'Join result changed unexpectedly after sync.' >&2; exit 2; }
+[[ "$dst_appended" == '20001|SOURCE-SKU-20001|11' ]] || { echo 'Legitimate application row did not synchronize.' >&2; exit 2; }
+for q in q1 q2 q3 q4; do
+  s="$(result_for "$SRC_APP" "$q")"; d="$(result_for "$DST_APP" "$q")"
+  printf 'after result %s source=%s destination=%s\n' "$q" "$s" "$d"
+  [[ "$s" == "$d" ]] || { echo "Result mismatch after sync for $q: source=$s destination=$d" >&2; exit 2; }
+done
+src_matrix_after="$(matrix "$SRC_APP")"
+dst_matrix_after="$(matrix "$DST_APP")"
+printf 'AFTER\ndestination role setting=%s\nappended source row=%s\nsource planner matrix after:\n%s\ndestination planner matrix after:\n%s\nNEON_ROLE_FROM_COLLAPSE_LIMIT_DRIFT_SYNC_EXIT=%s\n' "$dst_setting_after" "$dst_appended" "$src_matrix_after" "$dst_matrix_after" "$rc"
+[[ "$src_matrix_before" == "$src_matrix_after" && "$dst_matrix_before" == "$dst_matrix_after" ]] || { echo 'Planner matrix was not stable across synchronization.' >&2; exit 2; }
 
-src_plan_after="$(plan_from_probe "$src_after")"
-dst_plan_after="$(plan_from_probe "$dst_after")"
 echo 'NEON_ROLE_FROM_COLLAPSE_LIMIT_DRIFT_DETECTED=false'
-if [[ "$src_plan_after" != "$dst_plan_after" ]]; then
+if [[ "$src_matrix_after" != "$dst_matrix_after" ]]; then
   echo 'NEON_ROLE_FROM_COLLAPSE_LIMIT_PLAN_DIVERGENCE=true'
   exit 1
 fi
