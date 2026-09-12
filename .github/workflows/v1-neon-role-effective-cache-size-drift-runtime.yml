@@ -75,6 +75,11 @@ jobs:
           set -euo pipefail
           grep -Fxq 'NEON_ROLE_EFFECTIVE_CACHE_SIZE_DRIFT_SYNC_EXIT=0' role-effective-cache-size-drift-runtime.log
           grep -Fxq 'NEON_ROLE_EFFECTIVE_CACHE_SIZE_DRIFT_DETECTED=false' role-effective-cache-size-drift-runtime.log
+      - name: Confirm concrete planner consequence
+        if: always()
+        run: |
+          set -euo pipefail
+          grep -Fxq 'NEON_ROLE_EFFECTIVE_CACHE_SIZE_DRIFT_PLANNER_COST_DIVERGENCE=true' role-effective-cache-size-drift-runtime.log
       - name: Enforce certification result
         if: always()
         run: |
