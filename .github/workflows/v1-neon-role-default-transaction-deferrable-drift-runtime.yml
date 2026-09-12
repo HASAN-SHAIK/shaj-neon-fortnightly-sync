@@ -75,7 +75,9 @@ jobs:
           set -euo pipefail
           grep -Fxq 'NEON_ROLE_DEFAULT_TRANSACTION_DEFERRABLE_DRIFT_SYNC_EXIT=0' role-default-transaction-deferrable-drift-runtime.log
           grep -Fxq 'NEON_ROLE_DEFAULT_TRANSACTION_DEFERRABLE_DRIFT_DETECTED=false' role-default-transaction-deferrable-drift-runtime.log
-          grep -Fxq 'NEON_ROLE_DEFAULT_TRANSACTION_DEFERRABLE_BLOCKING_EFFECT_VERIFIED=false' role-default-transaction-deferrable-drift-runtime.log
+          grep -Fxq 'NEON_ROLE_DEFAULT_TRANSACTION_DEFERRABLE_BLOCKING_EFFECT_VERIFIED=true' role-default-transaction-deferrable-drift-runtime.log
+          grep -Eq '^NEON_ROLE_DEFAULT_TRANSACTION_DEFERRABLE_SOURCE_WAIT_MS=[0-9]+$' role-default-transaction-deferrable-drift-runtime.log
+          grep -Eq '^NEON_ROLE_DEFAULT_TRANSACTION_DEFERRABLE_DESTINATION_WAIT_MS=[0-9]+$' role-default-transaction-deferrable-drift-runtime.log
       - name: Enforce certification result
         if: always()
         run: |
