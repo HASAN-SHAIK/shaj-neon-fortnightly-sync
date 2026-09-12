@@ -39,7 +39,7 @@ role_setting() {
 probe() {
   psql "$1" -X -v ON_ERROR_STOP=1 -At -F '|' <<'SQL'
 show effective_cache_size;
-set random_page_cost=16;
+set random_page_cost=4;
 set seq_page_cost=1;
 set enable_bitmapscan=off;
 set enable_indexonlyscan=off;
@@ -50,6 +50,19 @@ select md5(string_agg(id::text || ':' || bucket::text || ':' || payload, ',' ord
 select id,sku,quantity from public.products where id=15000;
 SQL
 }
+plan_matrix() {
+  local url="$1" rpc threshold line kind
+  for rpc in 1.1 2 4 8 16; do
+    for threshold in 1 2 5 10 20; do
+      line="$(psql "$url" -X -q -v ON_ERROR_STOP=1 -At -c "set random_page_cost=${rpc}; set seq_page_cost=1; set enable_bitmapscan=off; set enable_indexonlyscan=off; set max_parallel_workers_per_gather=0; explain (costs on) select id,bucket,payload from public.effective_cache_size_probe where bucket < ${threshold};" | head -n1)"
+      if grep -q 'Index Scan using effective_cache_size_probe_bucket_idx' <<<"$line"; then kind=INDEX
+      elif grep -q 'Seq Scan on effective_cache_size_probe' <<<"$line"; then kind=SEQ
+      else kind=OTHER
+      fi
+      printf '%s|%s|%s|%s\n' "$rpc" "$threshold" "$kind" "$line"
+    done
+  done
+}
 common_ok() { local v="$1"; grep -Eq '^[0-9a-f]{32}$' <<<"$v" && grep -Fxq '15000|SOURCE-SKU-15000|0' <<<"$v"; }
 digest() { grep -E '^[0-9a-f]{32}$' <<<"$1" | tail -n1; }
 plan_kind() {
@@ -58,17 +71,22 @@ plan_kind() {
   elif grep -Eq 'Seq Scan on effective_cache_size_probe' <<<"$v"; then echo SEQ;
   else echo OTHER; fi
 }
+plan_signature() { cut -d'|' -f1-3 <<<"$1"; }
 
 src_setting="$(role_setting "$SRC_ADMIN")"; dst_setting="$(role_setting "$DST_ADMIN")"
 src_probe="$(probe "$SRC_APP")"; dst_probe="$(probe "$DST_APP")"
 src_plan="$(plan_kind "$src_probe")"; dst_plan="$(plan_kind "$dst_probe")"
-printf 'BEFORE\nsource role setting=%s\ndestination role setting=%s\nsource plan=%s\ndestination plan=%s\nsource app effective-cache-size probe=%s\ndestination app effective-cache-size probe=%s\n' "$src_setting" "$dst_setting" "$src_plan" "$dst_plan" "$src_probe" "$dst_probe"
+src_matrix="$(plan_matrix "$SRC_APP")"; dst_matrix="$(plan_matrix "$DST_APP")"
+printf 'BEFORE\nsource role setting=%s\ndestination role setting=%s\nsource plan=%s\ndestination plan=%s\nsource app effective-cache-size probe=%s\ndestination app effective-cache-size probe=%s\nsource planner matrix=%s\ndestination planner matrix=%s\n' "$src_setting" "$dst_setting" "$src_plan" "$dst_plan" "$src_probe" "$dst_probe" "$src_matrix" "$dst_matrix"
 [[ "${src_setting,,}" == 'effective_cache_size=128gb' && "${dst_setting,,}" == 'effective_cache_size=1mb' ]] || { echo 'Fixture did not establish effective_cache_size drift.' >&2; exit 2; }
 common_ok "$src_probe" && common_ok "$dst_probe" || { echo 'Application probe did not produce valid observable results.' >&2; exit 2; }
 [[ "$src_plan" != OTHER && "$dst_plan" != OTHER ]] || { echo 'Planner probe produced an unclassified plan.' >&2; exit 2; }
+! grep -q '|OTHER|' <<<"$src_matrix" && ! grep -q '|OTHER|' <<<"$dst_matrix" || { echo 'Planner matrix produced an unclassified plan.' >&2; exit 2; }
 [[ "$(digest "$src_probe")" == "$(digest "$dst_probe")" ]] || { echo 'Probe results differ before sync.' >&2; exit 2; }
 planner_divergence=false
-[[ "$src_plan" != "$dst_plan" ]] && planner_divergence=true
+planner_cost_divergence=false
+[[ "$(plan_signature "$src_matrix")" != "$(plan_signature "$dst_matrix")" ]] && planner_divergence=true
+[[ "$src_matrix" != "$dst_matrix" ]] && planner_cost_divergence=true
 
 set +e
 out="$(SOURCE_DATABASE_URL="$SRC_ADMIN" DESTINATION_DATABASE_URL="$DST_ADMIN" bash scripts/neon-sync/append-sync.sh 2>&1)"; rc=$?
@@ -84,13 +102,16 @@ dst_setting_after="$(role_setting "$DST_ADMIN")"
 dst_row="$(psql "$DST_ADMIN" -v ON_ERROR_STOP=1 -At -F '|' -c 'select id,sku,quantity from public.products where id=20001;')"
 src_after="$(probe "$SRC_APP")"; dst_after="$(probe "$DST_APP")"
 src_plan_after="$(plan_kind "$src_after")"; dst_plan_after="$(plan_kind "$dst_after")"
-printf 'AFTER\ndestination role setting=%s\nappended source row=%s\nsource plan=%s\ndestination plan=%s\nsource app effective-cache-size probe=%s\ndestination app effective-cache-size probe=%s\nNEON_ROLE_EFFECTIVE_CACHE_SIZE_DRIFT_SYNC_EXIT=%s\n' "$dst_setting_after" "$dst_row" "$src_plan_after" "$dst_plan_after" "$src_after" "$dst_after" "$rc"
+src_matrix_after="$(plan_matrix "$SRC_APP")"; dst_matrix_after="$(plan_matrix "$DST_APP")"
+printf 'AFTER\ndestination role setting=%s\nappended source row=%s\nsource plan=%s\ndestination plan=%s\nsource app effective-cache-size probe=%s\ndestination app effective-cache-size probe=%s\nsource planner matrix=%s\ndestination planner matrix=%s\nNEON_ROLE_EFFECTIVE_CACHE_SIZE_DRIFT_SYNC_EXIT=%s\n' "$dst_setting_after" "$dst_row" "$src_plan_after" "$dst_plan_after" "$src_after" "$dst_after" "$src_matrix_after" "$dst_matrix_after" "$rc"
 [[ "${dst_setting_after,,}" == 'effective_cache_size=1mb' ]] || { echo 'Destination setting changed unexpectedly.' >&2; exit 2; }
 [[ "$dst_row" == '20001|SOURCE-SKU-20001|11' ]] || { echo 'Legitimate application row did not synchronize.' >&2; exit 2; }
 common_ok "$src_after" && common_ok "$dst_after" || { echo 'Post-sync application probe invalid.' >&2; exit 2; }
 [[ "$(digest "$src_after")" == "$(digest "$dst_after")" ]] || { echo 'Probe results differ after sync.' >&2; exit 2; }
 [[ "$src_plan_after" == "$src_plan" && "$dst_plan_after" == "$dst_plan" ]] || { echo 'Planner behavior changed independently during sync.' >&2; exit 2; }
+[[ "$src_matrix_after" == "$src_matrix" && "$dst_matrix_after" == "$dst_matrix" ]] || { echo 'Planner matrix changed independently during sync.' >&2; exit 2; }
 printf 'NEON_ROLE_EFFECTIVE_CACHE_SIZE_DRIFT_PLANNER_DIVERGENCE=%s\n' "$planner_divergence"
+printf 'NEON_ROLE_EFFECTIVE_CACHE_SIZE_DRIFT_PLANNER_COST_DIVERGENCE=%s\n' "$planner_cost_divergence"
 echo 'NEON_ROLE_EFFECTIVE_CACHE_SIZE_DRIFT_DETECTED=false'
-if [[ "$planner_divergence" == true ]]; then exit 1; fi
+if [[ "$planner_cost_divergence" == true ]]; then exit 1; fi
 exit 3
