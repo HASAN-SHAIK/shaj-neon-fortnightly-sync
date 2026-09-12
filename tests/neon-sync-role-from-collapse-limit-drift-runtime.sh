@@ -62,6 +62,12 @@ where s.id <= 100;
 select id || '|' || sku || '|' || quantity from public.products where id=15000;
 SQL
 }
+plan_from_probe() {
+  # Probe layout is: setting line, EXPLAIN lines, count line, ordinary-row line.
+  # Compare only EXPLAIN output so the intentionally different GUC setting
+  # cannot itself be misclassified as a concrete execution-plan divergence.
+  sed '1d' <<<"$1" | sed '$d' | sed '$d'
+}
 
 src_setting="$(role_setting "$SRC_ADMIN")"; dst_setting="$(role_setting "$DST_ADMIN")"
 src_probe="$(probe "$SRC_APP")"; dst_probe="$(probe "$DST_APP")"
@@ -93,8 +99,10 @@ printf 'AFTER\ndestination role setting=%s\nappended source row=%s\nsource app f
 src_count_after="$(tail -n 2 <<<"$src_after" | head -n 1)"; dst_count_after="$(tail -n 2 <<<"$dst_after" | head -n 1)"
 [[ "$src_count_after" == '100' && "$dst_count_after" == '100' ]] || { echo 'Join result changed unexpectedly after sync.' >&2; exit 2; }
 
+src_plan_after="$(plan_from_probe "$src_after")"
+dst_plan_after="$(plan_from_probe "$dst_after")"
 echo 'NEON_ROLE_FROM_COLLAPSE_LIMIT_DRIFT_DETECTED=false'
-if [[ "$src_after" != "$dst_after" ]]; then
+if [[ "$src_plan_after" != "$dst_plan_after" ]]; then
   echo 'NEON_ROLE_FROM_COLLAPSE_LIMIT_PLAN_DIVERGENCE=true'
   exit 1
 fi
