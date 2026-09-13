@@ -39,7 +39,7 @@ truncatable_option() {
 }
 truncate_probe() {
   local url="$1"
-  psql "$url" -v ON_ERROR_STOP=1 -At <<'SQL'
+  psql "$url" -v ON_ERROR_STOP=1 -qAt <<'SQL'
 begin;
 truncate public.products_remote;
 select count(*) from public.products_remote;
