@@ -49,7 +49,7 @@ destination_probe_before="$(app_probe "$DESTINATION_APP_URL")"
 printf 'BEFORE\nsource fetch_size=%s\ndestination fetch_size=%s\nsource application probe=%s\ndestination application probe=%s\n' \
   "$source_before" "$destination_before" "$source_probe_before" "$destination_probe_before"
 
-if [[ "$source_before" != 100 || "$destination_before" != 10 || "$source_probe_before" != "$destination_probe_before" || "$source_probe_before" != '250|1995' ]]; then
+if [[ "$source_before" != 100 || "$destination_before" != 10 || "$source_probe_before" != "$destination_probe_before" || "$source_probe_before" != '250|1982' ]]; then
   echo 'Fixture did not establish isolated foreign-server fetch_size drift with equivalent application results.' >&2
   exit 2
 fi
