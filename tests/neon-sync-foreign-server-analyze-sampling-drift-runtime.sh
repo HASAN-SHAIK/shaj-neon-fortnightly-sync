@@ -51,10 +51,42 @@ app_read() {
 
 analyze_probe() {
   local admin_url="$1" app_url="$2"
-  psql "$admin_url" -v ON_ERROR_STOP=1 -c 'select pg_stat_reset();' >/dev/null
-  psql "$app_url" -v ON_ERROR_STOP=1 -c 'analyze public.sample_remote_fdw;' >/dev/null
-  psql "$admin_url" -v ON_ERROR_STOP=1 -c 'select pg_stat_force_next_flush();' >/dev/null
-  psql "$admin_url" -v ON_ERROR_STOP=1 -At -F '|' -c "select seq_scan,seq_tup_read from pg_stat_all_tables where schemaname='public' and relname='sample_remote';"
+  local tmpdir lock_pid analyze_pid observed=''
+  tmpdir="$(mktemp -d)"
+
+  psql "$admin_url" -v ON_ERROR_STOP=1 >"$tmpdir/lock.log" 2>&1 <<'SQL' &
+begin;
+lock table public.sample_remote in access exclusive mode;
+select pg_sleep(4);
+rollback;
+SQL
+  lock_pid=$!
+  sleep 0.35
+
+  psql "$app_url" -v ON_ERROR_STOP=1 -c 'analyze public.sample_remote_fdw;' >"$tmpdir/analyze.log" 2>&1 &
+  analyze_pid=$!
+
+  for _ in $(seq 1 30); do
+    observed="$(psql "$admin_url" -v ON_ERROR_STOP=1 -Atc "select regexp_replace(query, E'[\\n\\r\\t ]+', ' ', 'g') from pg_stat_activity where usename='cycle_app' and query ilike '%sample_remote%' and query not ilike 'analyze %' order by pid desc limit 1;")"
+    if [[ -n "$observed" ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+
+  if ! wait "$lock_pid"; then
+    cat "$tmpdir/lock.log" >&2
+    rm -rf "$tmpdir"
+    return 1
+  fi
+  if ! wait "$analyze_pid"; then
+    cat "$tmpdir/analyze.log" >&2
+    rm -rf "$tmpdir"
+    return 1
+  fi
+
+  rm -rf "$tmpdir"
+  printf '%s\n' "$observed"
 }
 
 source_option_before="$(server_sampling "$SOURCE_ADMIN_URL")"
@@ -63,20 +95,18 @@ source_read_before="$(app_read "$SOURCE_APP_URL")"
 destination_read_before="$(app_read "$DESTINATION_APP_URL")"
 source_probe_before="$(analyze_probe "$SOURCE_ADMIN_URL" "$SOURCE_APP_URL")"
 destination_probe_before="$(analyze_probe "$DESTINATION_ADMIN_URL" "$DESTINATION_APP_URL")"
-source_tuples_before="${source_probe_before#*|}"
-destination_tuples_before="${destination_probe_before#*|}"
 
 printf 'BEFORE\nsource analyze_sampling=%s\ndestination analyze_sampling=%s\n' "$source_option_before" "$destination_option_before"
 printf 'source app read=%s\ndestination app read=%s\n' "$source_read_before" "$destination_read_before"
-printf 'source remote analyze stats=%s\ndestination remote analyze stats=%s\n' "$source_probe_before" "$destination_probe_before"
+printf 'source remote ANALYZE SQL=%s\ndestination remote ANALYZE SQL=%s\n' "$source_probe_before" "$destination_probe_before"
 
 if [[ "$source_option_before" != system || "$destination_option_before" != off || "$source_read_before" != '100000|4799775' || "$destination_read_before" != '100000|4799775' ]]; then
   echo 'Fixture did not establish isolated analyze_sampling drift with equivalent application data.' >&2
   exit 2
 fi
 
-if (( destination_tuples_before < 90000 || source_tuples_before >= destination_tuples_before )); then
-  echo 'Fixture did not establish observable remote ANALYZE scan-volume divergence.' >&2
+if [[ -z "$source_probe_before" || -z "$destination_probe_before" ]] || ! grep -Eqi 'TABLESAMPLE[[:space:]]+SYSTEM' <<<"$source_probe_before" || grep -Eqi 'TABLESAMPLE' <<<"$destination_probe_before"; then
+  echo 'Fixture did not establish observable remote ANALYZE SQL divergence.' >&2
   exit 2
 fi
 
@@ -103,23 +133,21 @@ source_read_after="$(app_read "$SOURCE_APP_URL")"
 destination_read_after="$(app_read "$DESTINATION_APP_URL")"
 source_probe_after="$(analyze_probe "$SOURCE_ADMIN_URL" "$SOURCE_APP_URL")"
 destination_probe_after="$(analyze_probe "$DESTINATION_ADMIN_URL" "$DESTINATION_APP_URL")"
-source_tuples_after="${source_probe_after#*|}"
-destination_tuples_after="${destination_probe_after#*|}"
 
 printf 'AFTER\ndestination analyze_sampling=%s\nappended source row=%s\n' "$destination_option_after" "$destination_row_2"
 printf 'source app read=%s\ndestination app read=%s\n' "$source_read_after" "$destination_read_after"
-printf 'source remote analyze stats=%s\ndestination remote analyze stats=%s\n' "$source_probe_after" "$destination_probe_after"
+printf 'source remote ANALYZE SQL=%s\ndestination remote ANALYZE SQL=%s\n' "$source_probe_after" "$destination_probe_after"
 printf 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_DRIFT_SYNC_EXIT=%s\n' "$sync_exit"
 
-if [[ "$destination_option_after" == system && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$source_read_after" == '100000|4799775' && "$destination_read_after" == '100000|4799775' && "$destination_tuples_after" -lt 90000 ]]; then
+if [[ "$destination_option_after" == system && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$source_read_after" == '100000|4799775' && "$destination_read_after" == '100000|4799775' && -n "$destination_probe_after" ]] && grep -Eqi 'TABLESAMPLE[[:space:]]+SYSTEM' <<<"$destination_probe_after"; then
   echo 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_DRIFT_DETECTED=true'
   exit 0
 fi
 
-if [[ "$destination_option_after" == off && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$source_read_after" == '100000|4799775' && "$destination_read_after" == '100000|4799775' && "$destination_tuples_after" -ge 90000 && "$source_tuples_after" -lt "$destination_tuples_after" ]]; then
+if [[ "$destination_option_after" == off && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$source_read_after" == '100000|4799775' && "$destination_read_after" == '100000|4799775' && -n "$source_probe_after" && -n "$destination_probe_after" ]] && grep -Eqi 'TABLESAMPLE[[:space:]]+SYSTEM' <<<"$source_probe_after" && ! grep -Eqi 'TABLESAMPLE' <<<"$destination_probe_after"; then
   echo 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_DRIFT_DETECTED=false'
-  echo 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_IO_DIVERGENCE=true'
-  echo 'Destination retained analyze_sampling=off; production synchronization succeeded while ANALYZE continued reading materially more remote tuples than source.' >&2
+  echo 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_REMOTE_SQL_DIVERGENCE=true'
+  echo 'Destination retained analyze_sampling=off; production synchronization succeeded while ANALYZE continued using a different remote sampling SQL path from source.' >&2
   exit 1
 fi
 
