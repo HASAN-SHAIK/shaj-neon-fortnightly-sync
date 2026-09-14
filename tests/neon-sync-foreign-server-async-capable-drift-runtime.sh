@@ -30,6 +30,12 @@ select format('create server retail_async_a foreign data wrapper postgres_fdw op
 select format('create server retail_async_b foreign data wrapper postgres_fdw options (host ''127.0.0.1'', port ''5432'', dbname %L, async_capable ''true'')', :'dbname') \gexec
 create user mapping for cycle_app server retail_async_a options (user 'cycle_app', password_required 'false');
 create user mapping for cycle_app server retail_async_b options (user 'cycle_app', password_required 'false');
+-- Production row-count verification runs as the database admin. Give only the
+-- disposable fixture admin a matching local FDW mapping so verification can
+-- read the partitioned foreign table instead of failing before the scenario
+-- reaches the async_capable compatibility boundary.
+create user mapping for postgres server retail_async_a options (user 'postgres', password_required 'false');
+create user mapping for postgres server retail_async_b options (user 'postgres', password_required 'false');
 create table public.async_products(id bigint, quantity integer) partition by range(id);
 create foreign table public.async_products_a partition of public.async_products for values from (0) to (100)
   server retail_async_a options (schema_name 'public', table_name 'remote_a');
