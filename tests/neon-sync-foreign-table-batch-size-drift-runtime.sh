@@ -43,7 +43,7 @@ app_read() {
   psql "$1" -v ON_ERROR_STOP=1 -At -F '|' -c 'select count(*), sum(quantity) from public.products_remote;'
 }
 write_probe() {
-  psql "$1" -v ON_ERROR_STOP=1 -At <<'SQL'
+  psql "$1" -v ON_ERROR_STOP=1 -Atq <<'SQL'
 begin;
 insert into public.products_remote(id,sku,quantity)
 select 1000 + g, 'PROBE-' || g::text, g from generate_series(1,20) g;
