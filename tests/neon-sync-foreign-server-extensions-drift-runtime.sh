@@ -21,8 +21,8 @@ setup_db() {
 create extension postgres_fdw;
 create extension hstore;
 create function public.is_priority(text) returns boolean
-language sql immutable parallel safe
-as $$select $1 = 'yes'$$;
+language plpgsql immutable parallel safe
+as $$begin return $1 = 'yes'; end$$;
 alter extension hstore add function public.is_priority(text);
 create table public.products(id bigint primary key, sku text not null, quantity integer not null);
 create table public.remote_docs(id bigint primary key, priority text not null, category text not null);
