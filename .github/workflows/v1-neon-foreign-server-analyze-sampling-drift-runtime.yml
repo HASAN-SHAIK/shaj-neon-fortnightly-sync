@@ -81,7 +81,7 @@ jobs:
             exit 0
           fi
           grep -Fxq 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_DRIFT_DETECTED=false' foreign-server-analyze-sampling-drift-runtime.log
-          grep -Fxq 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_IO_DIVERGENCE=true' foreign-server-analyze-sampling-drift-runtime.log
+          grep -Fxq 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_REMOTE_SQL_DIVERGENCE=true' foreign-server-analyze-sampling-drift-runtime.log
       - name: Enforce certification result
         if: always()
         run: |
