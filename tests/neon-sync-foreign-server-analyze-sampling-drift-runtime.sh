@@ -57,7 +57,7 @@ analyze_probe() {
   psql "$admin_url" -v ON_ERROR_STOP=1 >"$tmpdir/lock.log" 2>&1 <<'SQL' &
 begin;
 lock table public.sample_remote in access exclusive mode;
-select pg_sleep(4);
+select pg_sleep(5);
 rollback;
 SQL
   lock_pid=$!
@@ -66,8 +66,8 @@ SQL
   psql "$app_url" -v ON_ERROR_STOP=1 -c 'analyze public.sample_remote_fdw;' >"$tmpdir/analyze.log" 2>&1 &
   analyze_pid=$!
 
-  for _ in $(seq 1 30); do
-    observed="$(psql "$admin_url" -v ON_ERROR_STOP=1 -Atc "select regexp_replace(query, E'[\\n\\r\\t ]+', ' ', 'g') from pg_stat_activity where usename='cycle_app' and query ilike '%sample_remote%' and query not ilike 'analyze %' order by pid desc limit 1;")"
+  for _ in $(seq 1 45); do
+    observed="$(psql "$admin_url" -v ON_ERROR_STOP=1 -Atc "select regexp_replace(query, E'[\\n\\r\\t ]+', ' ', 'g') from pg_stat_activity where usename='cycle_app' and state='active' and query ilike '%sample_remote%' and query not ilike 'analyze %' and query not ilike '%pg_relation_size%' order by pid desc limit 1;")"
     if [[ -n "$observed" ]]; then
       break
     fi
