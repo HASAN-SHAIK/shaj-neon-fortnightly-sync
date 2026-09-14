@@ -69,7 +69,11 @@ analyze_probe() {
     return 2
   fi
   fresh="$(docker logs "$container" 2>&1 | tail -n +$((before + 1)))"
-  printf '%s\n' "$fresh" | grep -E 'statement: .*sample_remote|STATEMENT: .*sample_remote' | grep -v -E 'ANALYZE .*sample_remote_fdw|pg_relation_size' || true
+  printf '%s\n' "$fresh" | grep -E 'statement: .*sample_remote|STATEMENT: .*sample_remote' | grep -v -E 'ANALYZE .*sample_remote_fdw' || true
+}
+
+has_remote_sampling_cardinality_probe() {
+  grep -Eqi "SELECT reltuples, relkind FROM pg_catalog.pg_class WHERE oid = 'public.sample_remote'::pg_catalog.regclass" <<<"$1"
 }
 
 source_option_before="$(server_sampling "$SOURCE_ADMIN_URL")"
@@ -88,8 +92,13 @@ if [[ "$source_option_before" != system || "$destination_option_before" != off |
   exit 2
 fi
 
-if [[ -z "$source_probe_before" || -z "$destination_probe_before" ]] || ! grep -Eqi 'TABLESAMPLE[[:space:]]+SYSTEM' <<<"$source_probe_before" || grep -Eqi 'TABLESAMPLE' <<<"$destination_probe_before"; then
-  echo 'Fixture did not establish observable remote ANALYZE SQL divergence.' >&2
+# PostgreSQL 18.6's observed postgres_fdw protocol for analyze_sampling=system
+# obtains remote relation cardinality (reltuples/relkind) before opening the
+# sampling cursor. analyze_sampling=off skips that remote sampling-cardinality
+# probe and transfers the table for local sampling. Assert the real protocol
+# distinction rather than assuming TABLESAMPLE text must appear in server logs.
+if [[ -z "$source_probe_before" || -z "$destination_probe_before" ]] || ! has_remote_sampling_cardinality_probe "$source_probe_before" || has_remote_sampling_cardinality_probe "$destination_probe_before"; then
+  echo 'Fixture did not establish observable PostgreSQL 18 remote ANALYZE protocol divergence.' >&2
   exit 2
 fi
 
@@ -122,15 +131,15 @@ printf 'source app read=%s\ndestination app read=%s\n' "$source_read_after" "$de
 printf 'SOURCE REMOTE ANALYZE LOG AFTER\n%s\nDESTINATION REMOTE ANALYZE LOG AFTER\n%s\n' "$source_probe_after" "$destination_probe_after"
 printf 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_DRIFT_SYNC_EXIT=%s\n' "$sync_exit"
 
-if [[ "$destination_option_after" == system && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$source_read_after" == '100000|4799775' && "$destination_read_after" == '100000|4799775' && -n "$destination_probe_after" ]] && grep -Eqi 'TABLESAMPLE[[:space:]]+SYSTEM' <<<"$destination_probe_after"; then
+if [[ "$destination_option_after" == system && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$source_read_after" == '100000|4799775' && "$destination_read_after" == '100000|4799775' && -n "$destination_probe_after" ]] && has_remote_sampling_cardinality_probe "$destination_probe_after"; then
   echo 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_DRIFT_DETECTED=true'
   exit 0
 fi
 
-if [[ "$destination_option_after" == off && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$source_read_after" == '100000|4799775' && "$destination_read_after" == '100000|4799775' && -n "$source_probe_after" && -n "$destination_probe_after" ]] && grep -Eqi 'TABLESAMPLE[[:space:]]+SYSTEM' <<<"$source_probe_after" && ! grep -Eqi 'TABLESAMPLE' <<<"$destination_probe_after"; then
+if [[ "$destination_option_after" == off && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$source_read_after" == '100000|4799775' && "$destination_read_after" == '100000|4799775' && -n "$source_probe_after" && -n "$destination_probe_after" ]] && has_remote_sampling_cardinality_probe "$source_probe_after" && ! has_remote_sampling_cardinality_probe "$destination_probe_after"; then
   echo 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_DRIFT_DETECTED=false'
   echo 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_REMOTE_SQL_DIVERGENCE=true'
-  echo 'Destination retained analyze_sampling=off; production synchronization succeeded while ANALYZE continued using a different remote sampling SQL path from source.' >&2
+  echo 'Destination retained analyze_sampling=off; production synchronization succeeded while ANALYZE continued using a different PostgreSQL 18 remote sampling protocol from source.' >&2
   exit 1
 fi
 
