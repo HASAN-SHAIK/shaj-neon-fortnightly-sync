@@ -20,17 +20,20 @@ setup_db() {
   psql "$admin_url" -v ON_ERROR_STOP=1 -v dbname="$dbname" -v source_extensions="$source_extensions" <<'SQL'
 create extension postgres_fdw;
 create extension hstore;
+create function public.is_priority(text) returns boolean
+language sql immutable parallel safe
+as $$select $1 = 'yes'$$;
+alter extension hstore add function public.is_priority(text);
 create table public.products(id bigint primary key, sku text not null, quantity integer not null);
-create table public.remote_docs(id bigint primary key, attrs hstore not null);
+create table public.remote_docs(id bigint primary key, priority text not null, category text not null);
 insert into public.remote_docs
 select g,
-       case when g % 10 = 0
-            then hstore(array['priority','category'], array['yes','retail'])
-            else hstore(array['category'], array['retail'])
-       end
+       case when g % 10 = 0 then 'yes' else 'no' end,
+       'retail'
 from generate_series(1,200) g;
 grant usage on schema public to cycle_app;
 grant select on public.remote_docs to cycle_app;
+grant execute on function public.is_priority(text) to cycle_app;
 
 \if :source_extensions
 select format(
@@ -46,7 +49,7 @@ select format(
 
 create user mapping for cycle_app server retail_ext options (user 'cycle_app', password_required 'false');
 create user mapping for postgres server retail_ext options (user 'postgres', password_required 'false');
-create foreign table public.docs_remote(id bigint, attrs hstore)
+create foreign table public.docs_remote(id bigint, priority text, category text)
   server retail_ext options (schema_name 'public', table_name 'remote_docs');
 grant select on public.docs_remote to cycle_app;
 SQL
@@ -61,16 +64,16 @@ server_extensions() {
   psql "$1" -v ON_ERROR_STOP=1 -Atc "select coalesce((select option_value from pg_options_to_table((select srvoptions from pg_foreign_server where srvname='retail_ext')) where option_name='extensions'),'<absent>');"
 }
 app_read() {
-  psql "$1" -v ON_ERROR_STOP=1 -At -c "select count(*) from public.docs_remote where attrs ? 'priority';"
+  psql "$1" -v ON_ERROR_STOP=1 -At -c "select count(*) from public.docs_remote where public.is_priority(priority);"
 }
 app_plan() {
-  psql "$1" -v ON_ERROR_STOP=1 -At -c "explain (verbose, costs off) select count(*) from public.docs_remote where attrs ? 'priority';"
+  psql "$1" -v ON_ERROR_STOP=1 -At -c "explain (verbose, costs off) select count(*) from public.docs_remote where public.is_priority(priority);"
 }
 plan_remote_where() {
   grep -E 'Remote SQL:.*WHERE' <<<"$1" >/dev/null
 }
 plan_local_filter() {
-  grep -E 'Filter:.*\?' <<<"$1" >/dev/null
+  grep -E 'Filter:.*is_priority' <<<"$1" >/dev/null
 }
 
 source_option_before="$(server_extensions "$SOURCE_ADMIN_URL")"
@@ -94,7 +97,7 @@ plan_remote_where "$destination_plan_before" && destination_remote_where=true ||
 plan_local_filter "$destination_plan_before" && destination_local_filter=true || true
 
 if [[ "$source_option_before" != hstore || "$destination_option_before" != '<absent>' || "$source_read_before" != 20 || "$destination_read_before" != 20 || "$source_remote_where" != true || "$source_local_filter" != false || "$destination_remote_where" != false || "$destination_local_filter" != true ]]; then
-  echo 'Fixture did not establish isolated foreign-server extensions drift with observable predicate-pushdown divergence.' >&2
+  echo 'Fixture did not establish isolated foreign-server extensions drift with observable immutable extension-member function pushdown divergence.' >&2
   exit 2
 fi
 
