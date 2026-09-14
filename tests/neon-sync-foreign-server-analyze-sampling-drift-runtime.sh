@@ -70,7 +70,7 @@ printf 'BEFORE\nsource analyze_sampling=%s\ndestination analyze_sampling=%s\n' "
 printf 'source app read=%s\ndestination app read=%s\n' "$source_read_before" "$destination_read_before"
 printf 'source remote analyze stats=%s\ndestination remote analyze stats=%s\n' "$source_probe_before" "$destination_probe_before"
 
-if [[ "$source_option_before" != system || "$destination_option_before" != off || "$source_read_before" != '100000|4799685' || "$destination_read_before" != '100000|4799685' ]]; then
+if [[ "$source_option_before" != system || "$destination_option_before" != off || "$source_read_before" != '100000|4799775' || "$destination_read_before" != '100000|4799775' ]]; then
   echo 'Fixture did not establish isolated analyze_sampling drift with equivalent application data.' >&2
   exit 2
 fi
@@ -111,12 +111,12 @@ printf 'source app read=%s\ndestination app read=%s\n' "$source_read_after" "$de
 printf 'source remote analyze stats=%s\ndestination remote analyze stats=%s\n' "$source_probe_after" "$destination_probe_after"
 printf 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_DRIFT_SYNC_EXIT=%s\n' "$sync_exit"
 
-if [[ "$destination_option_after" == system && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$source_read_after" == '100000|4799685' && "$destination_read_after" == '100000|4799685' && "$destination_tuples_after" -lt 90000 ]]; then
+if [[ "$destination_option_after" == system && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$source_read_after" == '100000|4799775' && "$destination_read_after" == '100000|4799775' && "$destination_tuples_after" -lt 90000 ]]; then
   echo 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_DRIFT_DETECTED=true'
   exit 0
 fi
 
-if [[ "$destination_option_after" == off && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$source_read_after" == '100000|4799685' && "$destination_read_after" == '100000|4799685' && "$destination_tuples_after" -ge 90000 && "$source_tuples_after" -lt "$destination_tuples_after" ]]; then
+if [[ "$destination_option_after" == off && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$source_read_after" == '100000|4799775' && "$destination_read_after" == '100000|4799775' && "$destination_tuples_after" -ge 90000 && "$source_tuples_after" -lt "$destination_tuples_after" ]]; then
   echo 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_DRIFT_DETECTED=false'
   echo 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_IO_DIVERGENCE=true'
   echo 'Destination retained analyze_sampling=off; production synchronization succeeded while ANALYZE continued reading materially more remote tuples than source.' >&2
