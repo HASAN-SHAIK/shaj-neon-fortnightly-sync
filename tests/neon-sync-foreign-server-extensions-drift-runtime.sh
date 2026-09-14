@@ -143,7 +143,7 @@ fi
 
 if [[ "$destination_option_after" == '<absent>' && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$source_read_after" == 20 && "$destination_read_after" == 20 && "$source_remote_where_after" == true && "$source_local_filter_after" == false && "$destination_remote_where_after" == false && "$destination_local_filter_after" == true ]]; then
   echo 'NEON_FOREIGN_SERVER_EXTENSIONS_DRIFT_DETECTED=false'
-  echo 'NEON_FOREIGN_SERVER_EXTENSIONS_PUSHdown_DIVERGENCE=true'
+  echo 'NEON_FOREIGN_SERVER_EXTENSIONS_PUSHDOWN_DIVERGENCE=true'
   echo 'Destination retained no hstore extension shippability declaration; production synchronization succeeded while identical application results used different local-vs-remote predicate execution.' >&2
   exit 1
 fi
