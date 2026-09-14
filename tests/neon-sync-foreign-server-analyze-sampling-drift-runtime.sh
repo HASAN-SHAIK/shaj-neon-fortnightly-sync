@@ -24,8 +24,20 @@ create table public.sample_remote(id integer primary key, quantity integer not n
 insert into public.sample_remote
 select g, (g % 97), repeat('x', 64)
 from generate_series(1,100000) g;
+
+-- Disposable runtime instrumentation.  The RLS predicate is evaluated on the
+-- remote side for the cycle_app mapping and advances one sequence value per
+-- row actually fetched by the ANALYZE sampling query.  Superuser/admin reads
+-- bypass RLS, so production sync verification is not affected by the probe.
+create sequence public.sample_probe_seq start 1;
+alter table public.sample_remote enable row level security;
+create policy sample_probe_policy on public.sample_remote
+  for select to cycle_app
+  using (nextval('public.sample_probe_seq'::regclass) > 0);
 grant usage on schema public to cycle_app;
 grant select on public.sample_remote to cycle_app;
+grant usage on sequence public.sample_probe_seq to cycle_app;
+
 select format('create server retail_sampling foreign data wrapper postgres_fdw options (host ''127.0.0.1'', port ''5432'', dbname %L, analyze_sampling %L)', :'dbname', :'sampling') \gexec
 create user mapping for cycle_app server retail_sampling options (user 'cycle_app', password_required 'false');
 create user mapping for postgres server retail_sampling options (user 'postgres', password_required 'false');
@@ -51,42 +63,9 @@ app_read() {
 
 analyze_probe() {
   local admin_url="$1" app_url="$2"
-  local tmpdir lock_pid analyze_pid observed=''
-  tmpdir="$(mktemp -d)"
-
-  psql "$admin_url" -v ON_ERROR_STOP=1 >"$tmpdir/lock.log" 2>&1 <<'SQL' &
-begin;
-lock table public.sample_remote in access exclusive mode;
-select pg_sleep(5);
-rollback;
-SQL
-  lock_pid=$!
-  sleep 0.35
-
-  psql "$app_url" -v ON_ERROR_STOP=1 -c 'analyze public.sample_remote_fdw;' >"$tmpdir/analyze.log" 2>&1 &
-  analyze_pid=$!
-
-  for _ in $(seq 1 45); do
-    observed="$(psql "$admin_url" -v ON_ERROR_STOP=1 -Atc "select regexp_replace(query, E'[\\n\\r\\t ]+', ' ', 'g') from pg_stat_activity where usename='cycle_app' and state='active' and query ilike '%sample_remote%' and query not ilike 'analyze %' and query not ilike '%pg_relation_size%' order by pid desc limit 1;")"
-    if [[ -n "$observed" ]]; then
-      break
-    fi
-    sleep 0.1
-  done
-
-  if ! wait "$lock_pid"; then
-    cat "$tmpdir/lock.log" >&2
-    rm -rf "$tmpdir"
-    return 1
-  fi
-  if ! wait "$analyze_pid"; then
-    cat "$tmpdir/analyze.log" >&2
-    rm -rf "$tmpdir"
-    return 1
-  fi
-
-  rm -rf "$tmpdir"
-  printf '%s\n' "$observed"
+  psql "$admin_url" -v ON_ERROR_STOP=1 -c "select setval('public.sample_probe_seq',1,false);" >/dev/null
+  psql "$app_url" -v ON_ERROR_STOP=1 -c 'analyze public.sample_remote_fdw;' >/dev/null
+  psql "$admin_url" -v ON_ERROR_STOP=1 -Atc "select case when is_called then last_value else 0 end from public.sample_probe_seq;"
 }
 
 source_option_before="$(server_sampling "$SOURCE_ADMIN_URL")"
@@ -98,15 +77,15 @@ destination_probe_before="$(analyze_probe "$DESTINATION_ADMIN_URL" "$DESTINATION
 
 printf 'BEFORE\nsource analyze_sampling=%s\ndestination analyze_sampling=%s\n' "$source_option_before" "$destination_option_before"
 printf 'source app read=%s\ndestination app read=%s\n' "$source_read_before" "$destination_read_before"
-printf 'source remote ANALYZE SQL=%s\ndestination remote ANALYZE SQL=%s\n' "$source_probe_before" "$destination_probe_before"
+printf 'source remote rows fetched for ANALYZE=%s\ndestination remote rows fetched for ANALYZE=%s\n' "$source_probe_before" "$destination_probe_before"
 
 if [[ "$source_option_before" != system || "$destination_option_before" != off || "$source_read_before" != '100000|4799775' || "$destination_read_before" != '100000|4799775' ]]; then
   echo 'Fixture did not establish isolated analyze_sampling drift with equivalent application data.' >&2
   exit 2
 fi
 
-if [[ -z "$source_probe_before" || -z "$destination_probe_before" ]] || ! grep -Eqi 'TABLESAMPLE[[:space:]]+SYSTEM' <<<"$source_probe_before" || grep -Eqi 'TABLESAMPLE' <<<"$destination_probe_before"; then
-  echo 'Fixture did not establish observable remote ANALYZE SQL divergence.' >&2
+if ! [[ "$source_probe_before" =~ ^[0-9]+$ && "$destination_probe_before" =~ ^[0-9]+$ ]] || (( source_probe_before <= 0 || destination_probe_before < 90000 || source_probe_before >= destination_probe_before )); then
+  echo 'Fixture did not establish observable remote ANALYZE row-fetch divergence.' >&2
   exit 2
 fi
 
@@ -136,18 +115,18 @@ destination_probe_after="$(analyze_probe "$DESTINATION_ADMIN_URL" "$DESTINATION_
 
 printf 'AFTER\ndestination analyze_sampling=%s\nappended source row=%s\n' "$destination_option_after" "$destination_row_2"
 printf 'source app read=%s\ndestination app read=%s\n' "$source_read_after" "$destination_read_after"
-printf 'source remote ANALYZE SQL=%s\ndestination remote ANALYZE SQL=%s\n' "$source_probe_after" "$destination_probe_after"
+printf 'source remote rows fetched for ANALYZE=%s\ndestination remote rows fetched for ANALYZE=%s\n' "$source_probe_after" "$destination_probe_after"
 printf 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_DRIFT_SYNC_EXIT=%s\n' "$sync_exit"
 
-if [[ "$destination_option_after" == system && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$source_read_after" == '100000|4799775' && "$destination_read_after" == '100000|4799775' && -n "$destination_probe_after" ]] && grep -Eqi 'TABLESAMPLE[[:space:]]+SYSTEM' <<<"$destination_probe_after"; then
+if [[ "$destination_option_after" == system && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$source_read_after" == '100000|4799775' && "$destination_read_after" == '100000|4799775' ]] && (( destination_probe_after > 0 && destination_probe_after < 90000 )); then
   echo 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_DRIFT_DETECTED=true'
   exit 0
 fi
 
-if [[ "$destination_option_after" == off && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$source_read_after" == '100000|4799775' && "$destination_read_after" == '100000|4799775' && -n "$source_probe_after" && -n "$destination_probe_after" ]] && grep -Eqi 'TABLESAMPLE[[:space:]]+SYSTEM' <<<"$source_probe_after" && ! grep -Eqi 'TABLESAMPLE' <<<"$destination_probe_after"; then
+if [[ "$destination_option_after" == off && "$destination_row_2" == '2|SOURCE-SKU-2|11' && "$source_read_after" == '100000|4799775' && "$destination_read_after" == '100000|4799775' ]] && (( source_probe_after > 0 && destination_probe_after >= 90000 && source_probe_after < destination_probe_after )); then
   echo 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_DRIFT_DETECTED=false'
-  echo 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_REMOTE_SQL_DIVERGENCE=true'
-  echo 'Destination retained analyze_sampling=off; production synchronization succeeded while ANALYZE continued using a different remote sampling SQL path from source.' >&2
+  echo 'NEON_FOREIGN_SERVER_ANALYZE_SAMPLING_REMOTE_FETCH_DIVERGENCE=true'
+  echo 'Destination retained analyze_sampling=off; production synchronization succeeded while ANALYZE continued fetching materially more remote rows than source.' >&2
   exit 1
 fi
 
