@@ -1,0 +1,61 @@
+name: V1 Neon Foreign Server Options log_line_prefix Drift Runtime
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      source_postgres:
+        image: postgres:18
+        env: { POSTGRES_HOST_AUTH_METHOD: trust }
+        ports: [55432:5432]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+      destination_postgres:
+        image: postgres:18
+        env: { POSTGRES_HOST_AUTH_METHOD: trust }
+        ports: [55433:5432]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ github.event.pull_request.head.sha || github.sha }}" }
+      - name: Assert exact head
+        if: github.event_name == 'pull_request'
+        run: test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+      - name: Install PostgreSQL 18 client
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo tee /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc >/dev/null
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo ${VERSION_CODENAME})-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update && sudo apt-get install -y postgresql-client-18
+      - run: bash -n scripts/neon-sync/append-sync.sh
+      - run: bash -n tests/neon-sync-foreign-server-options-log-line-prefix-drift-runtime.sh
+      - name: Real options log_line_prefix drift runtime
+        id: runtime
+        continue-on-error: true
+        run: |
+          set +e; bash tests/neon-sync-foreign-server-options-log-line-prefix-drift-runtime.sh 2>&1 | tee runtime.log; code=${PIPESTATUS[0]}; set -e; echo "$code" > runtime.exit; exit "$code"
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: cycle-d-foreign-server-options-log-line-prefix-drift-evidence, path: "runtime.*" }
+      - name: Confirm runtime verdict
+        if: always()
+        run: test -f runtime.exit && test "$(cat runtime.exit)" -ne 2
+      - name: Classify outcome
+        if: always()
+        run: |
+          if grep -Fxq 'NEON_FOREIGN_SERVER_OPTIONS_LOG_LINE_PREFIX_DRIFT_DETECTED=true' runtime.log; then exit 0; fi
+          if grep -Fxq 'NEON_FOREIGN_SERVER_OPTIONS_LOG_LINE_PREFIX_DRIFT_FAIL_CLOSED=true' runtime.log; then exit 0; fi
+          grep -Fxq 'NEON_FOREIGN_SERVER_OPTIONS_LOG_LINE_PREFIX_DRIFT_SYNC_EXIT=0' runtime.log
+          grep -Fxq 'NEON_FOREIGN_SERVER_OPTIONS_LOG_LINE_PREFIX_DRIFT_DETECTED=false' runtime.log
+          grep -Fxq 'NEON_FOREIGN_SERVER_OPTIONS_LOG_LINE_PREFIX_POLICY_DIVERGENCE=true' runtime.log
+      - name: Enforce certification
+        if: always()
+        run: test "$(cat runtime.exit)" -eq 0
