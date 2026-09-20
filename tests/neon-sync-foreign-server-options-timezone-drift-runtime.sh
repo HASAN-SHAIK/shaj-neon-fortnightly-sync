@@ -8,14 +8,15 @@ for r in "$SR" "$DR"; do psql "$r" -v ON_ERROR_STOP=1 -c 'create role cycle_app 
 psql "$SR" -v ON_ERROR_STOP=1 -c 'create database cycle_d_source;'; psql "$DR" -v ON_ERROR_STOP=1 -c 'create database cycle_d_destination;'
 setup(){ local u="$1" db="$2" tz="$3"; psql "$u" -v ON_ERROR_STOP=1 -v db="$db" -v tz="$tz" <<'SQL'
 create extension postgres_fdw; create table products(id bigint primary key,sku text not null,quantity int not null); create table remote_products(id bigint primary key,sku text not null,quantity int not null); insert into remote_products values(1,'REMOTE-SKU-1',7); grant usage on schema public to cycle_app; grant select on remote_products to cycle_app;
+create view remote_session_policy as select current_setting('TimeZone')::text as timezone; grant select on remote_session_policy to cycle_app;
 select format('create server retail_loopback foreign data wrapper postgres_fdw options(host ''127.0.0.1'',port ''5432'',dbname %L,options %L)',:'db','-c TimeZone=' || :'tz') \gexec
-create user mapping for cycle_app server retail_loopback options(user 'cycle_app',password_required 'false'); create user mapping for postgres server retail_loopback options(user 'postgres',password_required 'false'); create foreign table products_remote(id bigint,sku text,quantity int) server retail_loopback options(schema_name 'public',table_name 'remote_products'); create foreign table policy_remote(name text, setting text) server retail_loopback options(schema_name 'pg_catalog',table_name 'pg_settings'); grant select on products_remote,policy_remote to cycle_app;
+create user mapping for cycle_app server retail_loopback options(user 'cycle_app',password_required 'false'); create user mapping for postgres server retail_loopback options(user 'postgres',password_required 'false'); create foreign table products_remote(id bigint,sku text,quantity int) server retail_loopback options(schema_name 'public',table_name 'remote_products'); create foreign table policy_remote(timezone text) server retail_loopback options(schema_name 'public',table_name 'remote_session_policy'); grant select on products_remote,policy_remote to cycle_app;
 SQL
 }
 setup "$S" cycle_d_source 'UTC'; setup "$D" cycle_d_destination 'Asia/Kolkata'
 psql "$S" -c "insert into products values(1,'BASE-SKU-1',7)"; psql "$D" -c "insert into products values(1,'BASE-SKU-1',7)"
 opt(){ psql "$1" -Atc "select option_value from pg_options_to_table((select srvoptions from pg_foreign_server where srvname='retail_loopback')) where option_name='options';"; }
-remote_tz(){ psql "$1" -Atc "select setting from policy_remote where name='TimeZone';"; }
+remote_tz(){ psql "$1" -Atc "select timezone from policy_remote;"; }
 sb=$(opt "$S"); db=$(opt "$D"); sr=$(psql "$SA" -At -F '|' -c 'select id,sku,quantity from products_remote'); dr=$(psql "$DA" -At -F '|' -c 'select id,sku,quantity from products_remote'); st=$(remote_tz "$SA"); dt=$(remote_tz "$DA"); printf 'BEFORE source=%s destination=%s source_app=%s destination_app=%s source_timezone=%s destination_timezone=%s\n' "$sb" "$db" "$sr" "$dr" "$st" "$dt"
 [[ "$sb" == '-c TimeZone=UTC' && "$db" == '-c TimeZone=Asia/Kolkata' && "$sr" == '1|REMOTE-SKU-1|7' && "$dr" == '1|REMOTE-SKU-1|7' && "$st" == 'UTC' && "$dt" == 'Asia/Kolkata' ]] || { echo 'Fixture invalid'; exit 2; }
 psql "$S" -c "insert into products values(2,'SOURCE-SKU-2',11)"
